@@ -3,8 +3,6 @@
   import { getRunSummary } from "../lib/api.js";
   import { getQueryParam } from "../lib/router.js";
 
-  let { project = null } = $props();
-
   let runName = $state(null);
   let runId = $state(null);
   let summary = $state(null);
@@ -16,7 +14,7 @@
   });
 
   async function loadDetail() {
-    if (!project || (!runName && !runId)) {
+    if (!runName && !runId) {
       summary = null;
       return;
     }
@@ -24,7 +22,6 @@
     loading = true;
     try {
       const loadedSummary = await getRunSummary(
-        project,
         runId ? { id: runId, name: runName } : runName,
       );
       summary = loadedSummary;
@@ -39,7 +36,6 @@
   }
 
   $effect(() => {
-    project;
     runName;
     runId;
     loadDetail();
@@ -54,9 +50,9 @@
       <h2>Open a run</h2>
       <p>
         Choose a run from the <strong>Runs</strong> page or follow a run name from the sidebar. This view shows the
-        project name, log count, last step, metric keys, and any logged config.
+        project, log count, last step, metric keys, and any logged config.
       </p>
-      <pre><code>{'import trackio\ntrackio.init(project="my-project", config={"lr": 1e-3})\ntrackio.log({"loss": 0.5})\ntrackio.finish()'}</code></pre>
+      <pre><code>{'import trackio\ntrackio.init(dir="path/to/project", config={"lr": 1e-3})\ntrackio.log({"loss": 0.5})\ntrackio.finish()'}</code></pre>
       <p>Config passed to <code>trackio.init()</code> appears under Configuration when present.</p>
     </div>
   {:else}
@@ -64,8 +60,8 @@
       <h2>{summary.run}</h2>
       <div class="detail-grid">
         <div class="detail-item">
-          <span class="detail-label">Project</span>
-          <span class="detail-value">{summary.project}</span>
+          <span class="detail-label">Directory</span>
+          <span class="detail-value">{summary.dir}</span>
         </div>
         <div class="detail-item">
           <span class="detail-label">Total Logs</span>

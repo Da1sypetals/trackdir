@@ -1,11 +1,14 @@
+from pathlib import Path
 from typing import Iterator
 
+from trackio import utils
 from trackio.sqlite_storage import SQLiteStorage
 
 
 class Run:
-    def __init__(self, project: str, name: str, run_id: str | None = None):
-        self.project = project
+    def __init__(self, project_dir: str | Path, name: str, run_id: str | None = None):
+        self.project_dir = Path(project_dir).expanduser().resolve()
+        self._db_path = utils.get_db_path(self.project_dir)
         self.name = name
         self._id = run_id or name
         self._config = None
@@ -18,45 +21,43 @@ class Run:
     def config(self) -> dict | None:
         if self._config is None:
             self._config = SQLiteStorage.get_run_config(
-                self.project, self.name, run_id=self.id
+                self._db_path, self.name, run_id=self.id
             )
         return self._config
 
+    def logs(self, max_points: int | None = None) -> list[dict]:
+        return SQLiteStorage.get_logs(
+            self._db_path, self.name, max_points=max_points, run_id=self.id
+        )
+
     def alerts(self, level: str | None = None, since: str | None = None) -> list[dict]:
         return SQLiteStorage.get_alerts(
-            self.project, run_name=self.name, run_id=self.id, level=level, since=since
+            self._db_path, run_name=self.name, run_id=self.id, level=level, since=since
         )
 
     def delete(self) -> bool:
-        return SQLiteStorage.delete_run(self.project, self.name, run_id=self.id)
-
-    def move(self, new_project: str) -> bool:
-        success = SQLiteStorage.move_run(
-            self.project, self.name, new_project, run_id=self.id
-        )
-        if success:
-            self.project = new_project
-        return success
+        return SQLiteStorage.delete_run(self._db_path, self.name, run_id=self.id)
 
     def rename(self, new_name: str) -> "Run":
-        SQLiteStorage.rename_run(self.project, self.name, new_name, run_id=self.id)
+        SQLiteStorage.rename_run(self._db_path, self.name, new_name, run_id=self.id)
         self.name = new_name
         return self
 
     def __repr__(self) -> str:
-        return f"<Run {self.name} in project {self.project}>"
+        return f"<Run {self.name} in {self.project_dir}>"
 
 
 class Runs:
-    def __init__(self, project: str):
-        self.project = project
+    def __init__(self, project_dir: str | Path):
+        self.project_dir = Path(project_dir).expanduser().resolve()
+        self._db_path = utils.get_db_path(self.project_dir)
         self._runs = None
 
     def _load_runs(self):
         if self._runs is None:
-            records = SQLiteStorage.get_run_records(self.project)
+            records = SQLiteStorage.get_run_records(self._db_path)
             self._runs = [
-                Run(self.project, str(record["name"]), run_id=str(record["id"]))
+                Run(self.project_dir, str(record["name"]), run_id=str(record["id"]))
                 for record in records
             ]
 
@@ -74,22 +75,24 @@ class Runs:
 
     def __repr__(self) -> str:
         self._load_runs()
-        return f"<Runs project={self.project} count={len(self._runs)}>"
+        return f"<Runs dir={self.project_dir} count={len(self._runs)}>"
 
 
 class Api:
-    def runs(self, project: str) -> Runs:
-        if not SQLiteStorage.get_project_db_path(project).exists():
-            raise ValueError(f"Project '{project}' does not exist")
-        return Runs(project)
+    def runs(self, dir: str | Path) -> Runs:
+        db_path = utils.get_db_path(dir)
+        if not db_path.exists():
+            raise ValueError(f"No trackio project found at '{dir}'")
+        return Runs(dir)
 
     def alerts(
         self,
-        project: str,
+        dir: str | Path,
         run: str | None = None,
         level: str | None = None,
         since: str | None = None,
     ) -> list[dict]:
-        if not SQLiteStorage.get_project_db_path(project).exists():
-            raise ValueError(f"Project '{project}' does not exist")
-        return SQLiteStorage.get_alerts(project, run_name=run, level=level, since=since)
+        db_path = utils.get_db_path(dir)
+        if not db_path.exists():
+            raise ValueError(f"No trackio project found at '{dir}'")
+        return SQLiteStorage.get_alerts(db_path, run_name=run, level=level, since=since)

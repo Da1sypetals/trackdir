@@ -6,7 +6,6 @@
   import { buildColorMap } from "../lib/stores.js";
 
   let {
-    project = null,
     selectedRuns = [],
     allRuns = [],
     tableTruncateLength = 250,
@@ -112,7 +111,7 @@
   });
 
   async function loadMedia() {
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       rawMediaItems = EMPTY_MEDIA_ITEMS;
       return;
     }
@@ -122,7 +121,7 @@
       const runsToLoad = selectedRuns;
       const allLogs = [];
       for (const run of runsToLoad) {
-        const logs = await getLogs(project, run);
+        const logs = await getLogs(run);
         if (logs)
           allLogs.push(
             ...logs.map((l) => ({
@@ -179,7 +178,6 @@
   }
 
   $effect(() => {
-    project;
     selectedRuns;
     loadMedia();
   });
@@ -271,17 +269,14 @@
     <LoadingTrackio />
   {:else if !hasMedia}
     <div class="empty-state">
-      {#if !project}
-        <h2>Select a project</h2>
-        <p>Pick a project in the sidebar to browse media and tables for a run.</p>
-      {:else if selectedRuns.length === 0}
+      {#if selectedRuns.length === 0}
         <h2>No runs selected</h2>
         <p>Select runs in the sidebar to browse media and tables.</p>
-        <pre><code>{'import trackio\ntrackio.init(project="my-project")\ntrackio.log({"loss": 0.5})\ntrackio.finish()'}</code></pre>
+        <pre><code>{'import trackio\ntrackio.init(dir="path/to/project")\ntrackio.log({"loss": 0.5})\ntrackio.finish()'}</code></pre>
       {:else}
         <h2>No media or tables in this run</h2>
         <p>Log images, video, audio, and tables by passing Trackio objects to <code>trackio.log()</code>:</p>
-        <pre><code>{'import trackio\n\ntrackio.init(project="my-project")\ntrackio.log({"plot": trackio.Image("figure.png")})\ntrackio.log({"clip": trackio.Video("output.mp4")})\ntrackio.log({"audio": trackio.Audio("speech.wav")})\n\nimport pandas as pd\ndf = pd.DataFrame({"epoch": [0, 1], "acc": [0.9, 0.95]})\ntrackio.log({"samples": trackio.Table(dataframe=df)})'}</code></pre>
+        <pre><code>{'import trackio\n\ntrackio.init(dir="path/to/project")\ntrackio.log({"plot": trackio.Image("figure.png")})\ntrackio.log({"clip": trackio.Video("output.mp4")})\ntrackio.log({"audio": trackio.Audio("speech.wav")})\n\nimport pandas as pd\ndf = pd.DataFrame({"epoch": [0, 1], "acc": [0.9, 0.95]})\ntrackio.log({"samples": trackio.Table(dataframe=df)})'}</code></pre>
         <p>Each type appears in its own section here once logged.</p>
       {/if}
     </div>

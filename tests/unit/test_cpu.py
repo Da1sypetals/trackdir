@@ -145,7 +145,7 @@ def test_cpu_monitor_starts_and_stops(mock_psutil_env):
     assert not monitor._thread.is_alive()
 
 
-def test_auto_log_cpu_warns_without_psutil():
+def test_auto_log_cpu_warns_without_psutil(temp_dir):
     old_psutil = cpu.psutil
     old_available = cpu.PSUTIL_AVAILABLE
     cpu.PSUTIL_AVAILABLE = False
@@ -154,9 +154,7 @@ def test_auto_log_cpu_warns_without_psutil():
     with patch.dict("sys.modules", {"psutil": None}):
         with pytest.warns(UserWarning, match="psutil is not installed"):
             run = Run(
-                url=None,
-                project="test-project",
-                client=MagicMock(),
+                project_dir=temp_dir,
                 auto_log_cpu=True,
             )
         run.finish()
@@ -172,7 +170,7 @@ def test_init_auto_log_cpu_defaults_to_psutil_available(temp_dir):
         patch("trackio.apple_gpu_available", return_value=False),
         patch("trackio.run.CpuMonitor") as monitor_cls,
     ):
-        run = trackio.init(project="auto-cpu-default", name="run")
+        run = trackio.init(dir=temp_dir / "auto-cpu-default", name="run")
         monitor_cls.assert_called_once_with(run, interval=10.0)
         run.finish()
         context_vars.current_run.set(None)
@@ -185,13 +183,13 @@ def test_init_auto_log_cpu_default_skips_when_psutil_unavailable(temp_dir):
         patch("trackio.apple_gpu_available", return_value=False),
         patch("trackio.run.CpuMonitor") as monitor_cls,
     ):
-        run = trackio.init(project="auto-cpu-unavailable", name="run")
+        run = trackio.init(dir=temp_dir / "auto-cpu-unavailable", name="run")
         monitor_cls.assert_not_called()
         run.finish()
         context_vars.current_run.set(None)
 
 
-def test_apple_gpu_monitor_skips_cpu_metrics_when_cpu_monitor_enabled():
+def test_apple_gpu_monitor_skips_cpu_metrics_when_cpu_monitor_enabled(temp_dir):
     with (
         patch("trackio.run.gpu_available", return_value=False),
         patch("trackio.run.apple_gpu_available", return_value=True),
@@ -199,9 +197,7 @@ def test_apple_gpu_monitor_skips_cpu_metrics_when_cpu_monitor_enabled():
         patch("trackio.run.CpuMonitor") as cpu_monitor_cls,
     ):
         run = Run(
-            url=None,
-            project="test-project",
-            client=MagicMock(),
+            project_dir=temp_dir,
             auto_log_gpu=True,
             auto_log_cpu=True,
         )
@@ -212,7 +208,7 @@ def test_apple_gpu_monitor_skips_cpu_metrics_when_cpu_monitor_enabled():
         run.finish()
 
 
-def test_apple_gpu_monitor_keeps_cpu_metrics_without_cpu_monitor():
+def test_apple_gpu_monitor_keeps_cpu_metrics_without_cpu_monitor(temp_dir):
     with (
         patch("trackio.run.gpu_available", return_value=False),
         patch("trackio.run.apple_gpu_available", return_value=True),
@@ -220,9 +216,7 @@ def test_apple_gpu_monitor_keeps_cpu_metrics_without_cpu_monitor():
         patch("trackio.run.CpuMonitor") as cpu_monitor_cls,
     ):
         run = Run(
-            url=None,
-            project="test-project",
-            client=MagicMock(),
+            project_dir=temp_dir,
             auto_log_gpu=True,
             auto_log_cpu=False,
         )

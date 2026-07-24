@@ -67,24 +67,9 @@ def format_artifact(record: dict) -> str:
     return "\n".join(lines)
 
 
-def format_spaces(spaces: list[dict]) -> str:
-    """Format HF Spaces in human-readable format."""
-    if not spaces:
-        return "No Trackio Spaces found."
-
-    output = ["Trackio Spaces:"]
-    for space in spaces:
-        visibility = "private" if space.get("private") else "public"
-        output.append(f"  - {space['id']} ({visibility})")
-        if space.get("url"):
-            output.append(f"    {space['url']}")
-
-    return "\n".join(output)
-
-
 def format_project_summary(summary: dict) -> str:
     """Format project summary in human-readable format."""
-    output = [f"Project: {summary['project']}"]
+    output = [f"Project: {summary.get('project') or summary.get('dir')}"]
     output.append(f"Number of runs: {summary['num_runs']}")
 
     if summary["runs"]:
@@ -102,7 +87,7 @@ def format_project_summary(summary: dict) -> str:
 
 def format_run_summary(summary: dict) -> str:
     """Format run summary in human-readable format."""
-    output = [f"Project: {summary['project']}"]
+    output = [f"Project: {summary.get('project') or summary.get('dir')}"]
     output.append(f"Run: {summary['run']}")
     output.append(f"Number of logs: {summary['num_logs']}")
 

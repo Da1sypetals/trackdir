@@ -10,13 +10,12 @@ from pathlib import Path
 import orjson
 import pytest
 
-import trackio.sqlite_storage
-import trackio.utils
 from trackio.sqlite_storage import SQLiteStorage
+from trackio.utils import get_db_path
 
 
 def test_init_creates_metrics_table(temp_dir):
-    db_path = SQLiteStorage.init_db("proj1")
+    db_path = SQLiteStorage.init_db(get_db_path(temp_dir / "proj1"))
     assert os.path.exists(db_path)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -24,9 +23,10 @@ def test_init_creates_metrics_table(temp_dir):
 
 
 def test_log_and_get_metrics(temp_dir):
+    db_path = get_db_path(temp_dir / "proj1")
     metrics = {"acc": 0.9}
-    SQLiteStorage.log(project="proj1", run="run1", metrics=metrics)
-    results = SQLiteStorage.get_logs(project="proj1", run="run1")
+    SQLiteStorage.bulk_log(db_path=db_path, run="run1", metrics_list=[metrics])
+    results = SQLiteStorage.get_logs(db_path=db_path, run="run1")
     assert len(results) == 1
     assert results[0]["acc"] == 0.9
     assert results[0]["step"] == 0
@@ -34,6 +34,7 @@ def test_log_and_get_metrics(temp_dir):
 
 
 def test_get_logs_scalar_only_excludes_heavy_values(temp_dir):
+    db_path = get_db_path(temp_dir / "proj1")
     metrics = {
         "acc": 0.9,
         "count": 3,
@@ -43,9 +44,9 @@ def test_get_logs_scalar_only_excludes_heavy_values(temp_dir):
             "_value": [{"prompt": "x" * 10_000}],
         },
     }
-    SQLiteStorage.log(project="proj1", run="run1", metrics=metrics)
+    SQLiteStorage.bulk_log(db_path=db_path, run="run1", metrics_list=[metrics])
 
-    results = SQLiteStorage.get_logs(project="proj1", run="run1", scalar_only=True)
+    results = SQLiteStorage.get_logs(db_path=db_path, run="run1", scalar_only=True)
 
     assert results == [
         {
@@ -57,17 +58,16 @@ def test_get_logs_scalar_only_excludes_heavy_values(temp_dir):
     ]
 
 
-def test_get_projects_and_runs(temp_dir):
-    SQLiteStorage.log(project="proj1", run="run1", metrics={"a": 1})
-    SQLiteStorage.log(project="proj2", run="run2", metrics={"b": 2})
-    projects = set(SQLiteStorage.get_projects())
-    assert {"proj1", "proj2"}.issubset(projects)
-    runs = set(SQLiteStorage.get_runs("proj1"))
-    assert "run1" in runs
+def test_get_runs(temp_dir):
+    db_path = get_db_path(temp_dir / "proj1")
+    SQLiteStorage.bulk_log(db_path=db_path, run="run1", metrics_list=[{"a": 1}])
+    SQLiteStorage.bulk_log(db_path=db_path, run="run2", metrics_list=[{"b": 2}])
+    runs = set(SQLiteStorage.get_runs(db_path))
+    assert runs == {"run1", "run2"}
 
 
 def test_storage_connection_context_closes_connection(temp_dir):
-    db_path = SQLiteStorage.init_db("proj1")
+    db_path = SQLiteStorage.init_db(get_db_path(temp_dir / "proj1"))
     with SQLiteStorage._get_connection(db_path) as conn:
         conn.execute("SELECT 1").fetchone()
     # Confirming that Trackio's _get_connection() closes the connection on exiting the context manager.
@@ -76,66 +76,27 @@ def test_storage_connection_context_closes_connection(temp_dir):
 
 
 def test_delete_run(temp_dir):
-    project = "test_project"
+    db_path = get_db_path(temp_dir / "proj")
     run_name = "test_run"
     config = {"param1": "value1", "_Created": "2023-01-01T00:00:00"}
     metrics = [{"accuracy": 0.95, "loss": 0.1}]
-    SQLiteStorage.bulk_log(project, run_name, metrics, config=config)
+    SQLiteStorage.bulk_log(db_path, run_name, metrics, config=config)
 
-    assert SQLiteStorage.get_run_config(project, run_name) is not None
-    assert len(SQLiteStorage.get_logs(project, run_name)) > 0
+    assert SQLiteStorage.get_run_config(db_path, run_name) is not None
+    assert len(SQLiteStorage.get_logs(db_path, run_name)) > 0
 
-    SQLiteStorage.delete_run(project, run_name)
-    assert SQLiteStorage.get_run_config(project, run_name) is None
-    assert len(SQLiteStorage.get_logs(project, run_name)) == 0
-
-
-def test_import_export(temp_dir):
-    db_path_1 = SQLiteStorage.init_db("proj1")
-    db_path_2 = SQLiteStorage.init_db("proj2")
-
-    SQLiteStorage.log(project="proj1", run="run1", metrics={"a": 1})
-    SQLiteStorage.log(project="proj2", run="run2", metrics={"b": 2})
-    SQLiteStorage._dataset_import_attempted = True
-    SQLiteStorage.export_to_parquet()
-
-    metrics_before = {}
-    for proj in SQLiteStorage.get_projects():
-        if proj not in metrics_before:
-            metrics_before[proj] = {}
-        for run in SQLiteStorage.get_runs(proj):
-            metrics_before[proj][run] = SQLiteStorage.get_logs(proj, run)
-    os.unlink(db_path_1)
-    os.unlink(db_path_2)
-
-    SQLiteStorage.import_from_parquet()
-    metrics_after = {}
-    for proj in SQLiteStorage.get_projects():
-        if proj not in metrics_after:
-            metrics_after[proj] = {}
-        for run in SQLiteStorage.get_runs(proj):
-            metrics_after[proj][run] = SQLiteStorage.get_logs(proj, run)
-
-    assert metrics_before == metrics_after
+    SQLiteStorage.delete_run(db_path, run_name)
+    assert SQLiteStorage.get_run_config(db_path, run_name) is None
+    assert len(SQLiteStorage.get_logs(db_path, run_name)) == 0
 
 
 def _worker_using_sqlite_storage(
-    project, worker_id, duration_seconds=2, sync_start_time=None, temp_dir=None
+    db_path, worker_id, duration_seconds=2, sync_start_time=None
 ):
     """
     Worker that uses SQLiteStorage methods for database access.
     This will be protected by ProcessLock when available.
     """
-    if temp_dir:
-        os.environ["TRACKIO_DIR"] = temp_dir
-        from pathlib import Path
-
-        import trackio.sqlite_storage
-        import trackio.utils
-
-        trackio.utils.TRACKIO_DIR = Path(temp_dir)
-        trackio.sqlite_storage.TRACKIO_DIR = Path(temp_dir)
-
     if sync_start_time:
         while time.time() < sync_start_time:
             time.sleep(0.001)
@@ -152,7 +113,7 @@ def _worker_using_sqlite_storage(
                     {"batch": True, "worker": worker_id, "item": i}
                     for i in range(batch_size)
                 ]
-                SQLiteStorage.bulk_log(project, run_name, metrics_list)
+                SQLiteStorage.bulk_log(db_path, run_name, metrics_list)
 
         except sqlite3.OperationalError as e:
             error_msg = str(e).lower()
@@ -173,12 +134,8 @@ def test_concurrent_database_access_without_errors():
     """
     Test that concurrent database access doesn't produce 'database is locked' errors.
     """
-    with tempfile.TemporaryDirectory() as temp_dir:
-        os.environ["TRACKIO_DIR"] = str(temp_dir)
-        trackio.utils.TRACKIO_DIR = Path(temp_dir)
-        trackio.sqlite_storage.TRACKIO_DIR = Path(temp_dir)
-
-        project = "concurrent_test"
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = get_db_path(Path(tmp) / "concurrent_test")
 
         num_processes = 8
         duration = 2
@@ -189,7 +146,7 @@ def test_concurrent_database_access_without_errors():
             results = [
                 pool.apply_async(
                     _worker_using_sqlite_storage,
-                    (project, i, duration, sync_start_time, temp_dir),
+                    (str(db_path), i, duration, sync_start_time),
                 )
                 for i in range(num_processes)
             ]
@@ -206,17 +163,18 @@ def test_concurrent_database_access_without_errors():
             f"Got {total_db_locked_errors} 'database is locked' errors - ProcessLock fix failed"
         )
 
-        runs = SQLiteStorage.get_runs(project)
+        runs = SQLiteStorage.get_runs(db_path)
         assert len(runs) > 0, "Should have created some runs"
         total_logs = 0
         for run in runs:
-            logs = SQLiteStorage.get_logs(project, run)
+            logs = SQLiteStorage.get_logs(db_path, run)
             total_logs += len(logs)
 
         assert total_logs > 0, "Should have created some log entries"
 
 
 def test_config_storage_in_database(temp_dir):
+    db_path = get_db_path(temp_dir / "proj")
     config = {
         "epochs": 10,
         "_Username": "testuser",
@@ -224,21 +182,20 @@ def test_config_storage_in_database(temp_dir):
     }
 
     SQLiteStorage.bulk_log(
-        project="test_project",
+        db_path=db_path,
         run="test_run",
         metrics_list=[{"loss": 0.5}],
         config=config,
     )
 
-    stored_config = SQLiteStorage.get_run_config("test_project", "test_run")
+    stored_config = SQLiteStorage.get_run_config(db_path, "test_run")
     assert stored_config["epochs"] == 10
     assert stored_config["_Username"] == "testuser"
     assert stored_config["_Created"] == "2024-01-01T00:00:00+00:00"
 
 
-def test_old_database_without_configs_table(temp_dir):
-    # To make sure that we can continue to work with projects created with older versions of Trackio.
-    db_path = SQLiteStorage.get_project_db_path("test")
+def test_database_without_configs_table(temp_dir):
+    db_path = get_db_path(temp_dir / "test")
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(db_path) as conn:
@@ -247,78 +204,74 @@ def test_old_database_without_configs_table(temp_dir):
                 id INTEGER PRIMARY KEY,
                 timestamp TEXT,
                 run_name TEXT,
+                run_id TEXT,
                 step INTEGER,
                 metrics TEXT
             )
         """)
         conn.execute(
-            "INSERT INTO metrics (timestamp, run_name, step, metrics) VALUES (?, ?, ?, ?)",
-            ("2024-01-01", "test_run", 0, orjson.dumps({"loss": 0.5})),
+            "INSERT INTO metrics (timestamp, run_name, run_id, step, metrics) VALUES (?, ?, ?, ?, ?)",
+            ("2024-01-01", "test_run", "test_run", 0, orjson.dumps({"loss": 0.5})),
         )
 
-    config = SQLiteStorage.get_run_config("test", "test_run")
+    config = SQLiteStorage.get_run_config(db_path, "test_run")
     assert config is None
 
-    all_configs = SQLiteStorage.get_all_run_configs("test")
+    all_configs = SQLiteStorage.get_all_run_configs(db_path)
     assert all_configs == {}
 
 
 def test_get_runs_returns_chronological_order(temp_dir):
-    db_path = SQLiteStorage.get_project_db_path("proj")
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path = get_db_path(temp_dir / "proj")
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("""
-            CREATE TABLE metrics (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT,
-                run_name TEXT,
-                step INTEGER,
-                metrics TEXT
-            )
-        """)
-        conn.execute(
-            "INSERT INTO metrics (timestamp, run_name, step, metrics) VALUES (?, ?, ?, ?)",
-            ("2024-01-01", "run-z", 0, orjson.dumps({"loss": 0.5})),
-        )
-        conn.execute(
-            "INSERT INTO metrics (timestamp, run_name, step, metrics) VALUES (?, ?, ?, ?)",
-            ("2024-01-02", "run-a", 0, orjson.dumps({"loss": 0.5})),
-        )
-        conn.execute(
-            "INSERT INTO metrics (timestamp, run_name, step, metrics) VALUES (?, ?, ?, ?)",
-            ("2024-01-03", "run-m", 0, orjson.dumps({"loss": 0.5})),
-        )
+    SQLiteStorage.bulk_log(
+        db_path,
+        "run-z",
+        [{"loss": 0.5}],
+        timestamps=["2024-01-01T00:00:00+00:00"],
+    )
+    SQLiteStorage.bulk_log(
+        db_path,
+        "run-a",
+        [{"loss": 0.5}],
+        timestamps=["2024-01-02T00:00:00+00:00"],
+    )
+    SQLiteStorage.bulk_log(
+        db_path,
+        "run-m",
+        [{"loss": 0.5}],
+        timestamps=["2024-01-03T00:00:00+00:00"],
+    )
 
-    runs = SQLiteStorage.get_runs("proj")
+    runs = SQLiteStorage.get_runs(db_path)
     assert runs == ["run-z", "run-a", "run-m"]
 
 
 def test_get_metric_values_respects_run_id_and_name_resolves_latest_run(temp_dir):
-    project = "proj_metric_values"
+    db_path = get_db_path(temp_dir / "proj_metric_values")
     run_name = "dup-run"
 
     SQLiteStorage.bulk_log(
-        project,
+        db_path,
         run_name,
         [{"loss": 1.0}],
         run_id="run-id-1",
         timestamps=["2024-01-01T00:00:00+00:00"],
     )
     SQLiteStorage.bulk_log(
-        project,
+        db_path,
         run_name,
         [{"loss": 2.0}],
         run_id="run-id-2",
         timestamps=["2024-01-02T00:00:00+00:00"],
     )
 
-    latest_by_name = SQLiteStorage.get_metric_values(project, run_name, "loss")
+    latest_by_name = SQLiteStorage.get_metric_values(db_path, run_name, "loss")
     first_by_id = SQLiteStorage.get_metric_values(
-        project, run_name, "loss", run_id="run-id-1"
+        db_path, run_name, "loss", run_id="run-id-1"
     )
     second_by_id = SQLiteStorage.get_metric_values(
-        project, run_name, "loss", run_id="run-id-2"
+        db_path, run_name, "loss", run_id="run-id-2"
     )
 
     assert [row["value"] for row in latest_by_name] == [2.0]
@@ -327,200 +280,174 @@ def test_get_metric_values_respects_run_id_and_name_resolves_latest_run(temp_dir
 
 
 def test_rename_run(temp_dir):
-    project = "test_project"
+    db_path = get_db_path(temp_dir / "proj")
     old_name = "old_run"
     new_name = "new_run"
 
     config = {"param1": "value1", "_Created": "2023-01-01T00:00:00"}
     metrics = [{"accuracy": 0.95, "loss": 0.1}]
-    SQLiteStorage.bulk_log(project, old_name, metrics, config=config)
+    SQLiteStorage.bulk_log(db_path, old_name, metrics, config=config)
 
-    assert SQLiteStorage.get_run_config(project, old_name) is not None
-    assert len(SQLiteStorage.get_logs(project, old_name)) > 0
+    assert SQLiteStorage.get_run_config(db_path, old_name) is not None
+    assert len(SQLiteStorage.get_logs(db_path, old_name)) > 0
 
-    SQLiteStorage.rename_run(project, old_name, new_name)
+    SQLiteStorage.rename_run(db_path, old_name, new_name)
 
-    assert SQLiteStorage.get_run_config(project, old_name) is None
-    assert len(SQLiteStorage.get_logs(project, old_name)) == 0
+    assert SQLiteStorage.get_run_config(db_path, old_name) is None
+    assert len(SQLiteStorage.get_logs(db_path, old_name)) == 0
 
-    assert SQLiteStorage.get_run_config(project, new_name) is not None
-    assert len(SQLiteStorage.get_logs(project, new_name)) > 0
+    assert SQLiteStorage.get_run_config(db_path, new_name) is not None
+    assert len(SQLiteStorage.get_logs(db_path, new_name)) > 0
 
-    new_logs = SQLiteStorage.get_logs(project, new_name)
+    new_logs = SQLiteStorage.get_logs(db_path, new_name)
     assert new_logs[0]["accuracy"] == 0.95
     assert new_logs[0]["loss"] == 0.1
 
 
 def test_rename_run_allows_duplicate_name_in_new_schema(temp_dir):
-    project = "test_project"
+    db_path = get_db_path(temp_dir / "proj")
     run1 = "run1"
     run2 = "run2"
 
-    SQLiteStorage.bulk_log(project, run1, [{"a": 1}])
-    SQLiteStorage.bulk_log(project, run2, [{"b": 2}])
+    SQLiteStorage.bulk_log(db_path, run1, [{"a": 1}])
+    SQLiteStorage.bulk_log(db_path, run2, [{"b": 2}])
 
-    SQLiteStorage.rename_run(project, run1, run2)
+    SQLiteStorage.rename_run(db_path, run1, run2)
 
-    records = SQLiteStorage.get_run_records(project)
+    records = SQLiteStorage.get_run_records(db_path)
     duplicate_names = [record for record in records if record["name"] == run2]
     assert len(duplicate_names) == 2
 
 
 def test_rename_run_with_media(temp_dir):
-    from trackio.utils import MEDIA_DIR
+    from trackio.utils import media_dir
 
-    project = "test_project"
+    project_dir = temp_dir / "proj"
+    db_path = get_db_path(project_dir)
     old_name = "old_run"
     new_name = "new_run"
 
-    media_dir = MEDIA_DIR / project / old_name
-    media_dir.mkdir(parents=True, exist_ok=True)
-    test_file = media_dir / "test.txt"
+    old_media_dir = media_dir(project_dir) / old_name
+    old_media_dir.mkdir(parents=True, exist_ok=True)
+    test_file = old_media_dir / "test.txt"
     test_file.write_text("test content")
 
     metrics = [
         {
             "image": {
                 "_type": "trackio.image",
-                "file_path": f"{project}/{old_name}/test.txt",
+                "file_path": f"{old_name}/test.txt",
                 "caption": "test",
             }
         }
     ]
-    SQLiteStorage.bulk_log(project, old_name, metrics)
+    SQLiteStorage.bulk_log(db_path, old_name, metrics)
 
-    SQLiteStorage.rename_run(project, old_name, new_name)
+    SQLiteStorage.rename_run(db_path, old_name, new_name)
 
-    new_media_dir = MEDIA_DIR / project / new_name
+    new_media_dir = media_dir(project_dir) / new_name
     assert new_media_dir.exists()
     assert (new_media_dir / "test.txt").exists()
 
-    old_media_dir = MEDIA_DIR / project / old_name
     assert not old_media_dir.exists()
 
-    new_logs = SQLiteStorage.get_logs(project, new_name)
+    new_logs = SQLiteStorage.get_logs(db_path, new_name)
     assert len(new_logs) > 0
     assert "image" in new_logs[0]
-    assert new_logs[0]["image"]["file_path"].startswith(f"{project}/{new_name}/")
+    assert new_logs[0]["image"]["file_path"].startswith(f"{new_name}/")
 
 
 def test_rename_run_nonexistent(temp_dir):
-    project = "test_project"
-    old_name = "nonexistent_run"
-    new_name = "new_run"
+    db_path = get_db_path(temp_dir / "proj")
 
     with pytest.raises(ValueError, match="does not exist"):
-        SQLiteStorage.rename_run(project, old_name, new_name)
+        SQLiteStorage.rename_run(db_path, "nonexistent_run", "new_run")
 
 
 def test_rename_run_empty_name(temp_dir):
-    project = "test_project"
+    db_path = get_db_path(temp_dir / "proj")
     old_name = "old_run"
 
-    SQLiteStorage.bulk_log(project, old_name, [{"a": 1}])
+    SQLiteStorage.bulk_log(db_path, old_name, [{"a": 1}])
 
     with pytest.raises(ValueError, match="cannot be empty"):
-        SQLiteStorage.rename_run(project, old_name, "")
+        SQLiteStorage.rename_run(db_path, old_name, "")
 
     with pytest.raises(ValueError, match="cannot be empty"):
-        SQLiteStorage.rename_run(project, old_name, "   ")
+        SQLiteStorage.rename_run(db_path, old_name, "   ")
 
-    assert len(SQLiteStorage.get_logs(project, old_name)) > 0
+    assert len(SQLiteStorage.get_logs(db_path, old_name)) > 0
 
 
 def test_rename_run_with_system_metrics(temp_dir):
-    project = "test_project"
+    db_path = get_db_path(temp_dir / "proj")
     old_name = "old_run"
     new_name = "new_run"
 
     metrics = [{"accuracy": 0.95}]
-    SQLiteStorage.bulk_log(project, old_name, metrics)
+    SQLiteStorage.bulk_log(db_path, old_name, metrics)
 
     system_metrics = [{"gpu_usage": 80.5}]
-    SQLiteStorage.bulk_log_system(project, old_name, system_metrics)
+    SQLiteStorage.bulk_log_system(db_path, old_name, system_metrics)
 
-    SQLiteStorage.rename_run(project, old_name, new_name)
+    SQLiteStorage.rename_run(db_path, old_name, new_name)
 
-    assert len(SQLiteStorage.get_logs(project, new_name)) > 0
-    assert len(SQLiteStorage.get_system_logs(project, new_name)) > 0
-    assert len(SQLiteStorage.get_system_logs(project, old_name)) == 0
+    assert len(SQLiteStorage.get_logs(db_path, new_name)) > 0
+    assert len(SQLiteStorage.get_system_logs(db_path, new_name)) > 0
+    assert len(SQLiteStorage.get_system_logs(db_path, old_name)) == 0
 
-    new_system_logs = SQLiteStorage.get_system_logs(project, new_name)
+    new_system_logs = SQLiteStorage.get_system_logs(db_path, new_name)
     assert new_system_logs[0]["gpu_usage"] == 80.5
 
 
-def test_bucket_upload_paths_match_mount_layout(temp_dir):
-    project = "proj_bucket"
-    SQLiteStorage.log(project=project, run="run1", metrics={"loss": 0.5})
-
-    media_dir = Path(temp_dir) / "media" / project
-    media_dir.mkdir(parents=True)
-    (media_dir / "img.png").write_bytes(b"fake")
-
-    db_path = SQLiteStorage.get_project_db_path(project)
-    files_to_add = [(str(db_path), f"trackio/{db_path.name}")]
-    for media_file in media_dir.rglob("*"):
-        if media_file.is_file():
-            rel = media_file.relative_to(Path(temp_dir))
-            files_to_add.append((str(media_file), f"trackio/{rel}"))
-
-    mount_point = Path("/data")
-    trackio_dir = mount_point / "trackio"
-    for local_path, remote_path in files_to_add:
-        mounted = mount_point / remote_path
-        assert str(mounted).startswith(str(trackio_dir)), (
-            f"Bucket path {remote_path!r} would mount at {mounted}, "
-            f"outside TRACKIO_DIR={trackio_dir}"
-        )
-        assert Path(local_path).exists()
-
-
-def test_query_project_allows_select(temp_dir):
-    SQLiteStorage.log(project="qproj", run="r1", metrics={"acc": 0.9})
-    result = SQLiteStorage.query_project("qproj", "SELECT run_name FROM metrics")
-    assert result["project"] == "qproj"
+def test_query_allows_select(temp_dir):
+    db_path = get_db_path(temp_dir / "qproj")
+    SQLiteStorage.bulk_log(db_path=db_path, run="r1", metrics_list=[{"acc": 0.9}])
+    result = SQLiteStorage.query(db_path, "SELECT run_name FROM metrics")
     assert result["columns"] == ["run_name"]
     assert result["row_count"] == 1
     assert result["rows"][0]["run_name"] == "r1"
 
 
-def test_query_project_allows_with_and_safe_pragma(temp_dir):
-    SQLiteStorage.log(project="qproj", run="r1", metrics={"acc": 0.9})
-    cte = SQLiteStorage.query_project(
-        "qproj", "WITH t AS (SELECT 1 AS x) SELECT x FROM t"
-    )
+def test_query_allows_with_and_safe_pragma(temp_dir):
+    db_path = get_db_path(temp_dir / "qproj")
+    SQLiteStorage.bulk_log(db_path=db_path, run="r1", metrics_list=[{"acc": 0.9}])
+    cte = SQLiteStorage.query(db_path, "WITH t AS (SELECT 1 AS x) SELECT x FROM t")
     assert cte["rows"] == [{"x": 1}]
-    pragma = SQLiteStorage.query_project("qproj", "PRAGMA table_info(metrics)")
+    pragma = SQLiteStorage.query(db_path, "PRAGMA table_info(metrics)")
     assert pragma["row_count"] > 0
 
 
-def test_query_project_denies_writes(temp_dir):
-    SQLiteStorage.log(project="qproj", run="r1", metrics={"acc": 0.9})
+def test_query_denies_writes(temp_dir):
+    db_path = get_db_path(temp_dir / "qproj")
+    SQLiteStorage.bulk_log(db_path=db_path, run="r1", metrics_list=[{"acc": 0.9}])
     for bad in [
-        "INSERT INTO metrics (project_name, run_name, step, metrics, timestamp) VALUES ('x','y',0,'{}','t')",
+        "INSERT INTO metrics (run_name, step, metrics, timestamp) VALUES ('y',0,'{}','t')",
         "UPDATE metrics SET run_name='x'",
         "DELETE FROM metrics",
         "DROP TABLE metrics",
         "PRAGMA journal_mode = DELETE",
     ]:
         with pytest.raises(ValueError):
-            SQLiteStorage.query_project("qproj", bad)
+            SQLiteStorage.query(db_path, bad)
 
 
-def test_query_project_row_limit(temp_dir):
+def test_query_row_limit(temp_dir):
+    db_path = get_db_path(temp_dir / "qproj")
     for i in range(5):
-        SQLiteStorage.log(project="qproj", run=f"r{i}", metrics={"a": i})
+        SQLiteStorage.bulk_log(db_path=db_path, run=f"r{i}", metrics_list=[{"a": i}])
     with pytest.raises(ValueError, match="more than"):
-        SQLiteStorage.query_project("qproj", "SELECT * FROM metrics", max_rows=2)
+        SQLiteStorage.query(db_path, "SELECT * FROM metrics", max_rows=2)
 
 
-def test_query_project_normalizes_bytes(temp_dir):
-    SQLiteStorage.log(project="qproj", run="r1", metrics={"a": 1})
-    result = SQLiteStorage.query_project("qproj", "SELECT randomblob(4) AS b")
+def test_query_normalizes_bytes(temp_dir):
+    db_path = get_db_path(temp_dir / "qproj")
+    SQLiteStorage.bulk_log(db_path=db_path, run="r1", metrics_list=[{"a": 1}])
+    result = SQLiteStorage.query(db_path, "SELECT randomblob(4) AS b")
     assert isinstance(result["rows"][0]["b"], str)
     assert len(result["rows"][0]["b"]) == 8
 
 
-def test_query_project_missing_project(temp_dir):
+def test_query_missing_project(temp_dir):
     with pytest.raises(FileNotFoundError):
-        SQLiteStorage.query_project("nonexistent", "SELECT 1")
+        SQLiteStorage.query(get_db_path(temp_dir / "nonexistent"), "SELECT 1")

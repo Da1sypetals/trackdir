@@ -12,15 +12,11 @@
   import RunDetail from "./pages/RunDetail.svelte";
   import Files from "./pages/Files.svelte";
   import {
-    getAllProjects,
     getRunsForProject,
     getRunConfigs,
     getAlerts,
     getTabAvailability,
-    getRunMutationStatus,
     getSettings,
-    getReadOnlySource,
-    isStaticMode,
     setMediaDir,
   } from "./lib/api.js";
   import {
@@ -61,14 +57,15 @@
   onThemeChange((dark) => { darkMode = dark; });
 
   let currentPage = $state("metrics");
-  let projects = $state([]);
-  let selectedProject = $state(null);
+  let projectName = $state(null);
   let runs = $state([]);
   let selectedRuns = $state([]);
   let smoothing = $state(10);
   let xAxis = $state("step");
   let logScaleX = $state(false);
   let logScaleY = $state(false);
+  let outlierFilterHead = $state(0);
+  let outlierFilterTail = $state(0);
   let metricFilter = $state("");
   let realtimeEnabled = $state(true);
   let showHeaders = $state(true);
@@ -83,18 +80,10 @@
   let urlTick = $state(0);
   let alerts = $state([]);
   let pollTimer = $state(null);
-  let mutationStatus = $state({
-    spaces: false,
-    allowed: true,
-    auth: "local",
-  });
-  let mutationPollTimer = $state(null);
   let appBootstrapReady = $state(false);
   let logoUrls = $state({ light: "/static/trackio/trackio_logo_type_light_transparent.png", dark: "/static/trackio/trackio_logo_type_dark_transparent.png" });
   let plotOrder = $state([]);
   let tableTruncateLength = $state(250);
-  let readOnlySource = $state(null);
-  let spaceId = $state(null);
   let availableSystemDevices = $state([]);
   let selectedSystemDevices = $state([]);
   let tabAvailability = $state({});
@@ -121,7 +110,6 @@
     "files",
   ];
   let runConfigs = $state({});
-  let runConfigsProject = $state(null);
 
   function runKey(run) {
     return run?.id ?? run?.name;
@@ -151,58 +139,12 @@
     return pathname === "/";
   }
 
-  function lockedProjectName() {
-    return getQueryParam("project") || getQueryParam("selected_project");
-  }
-
-  function applyLockedProject() {
-    const locked = lockedProjectName();
-    if (locked && projects.includes(locked)) {
-      selectedProject = locked;
-    }
-  }
-
-  async function refreshProjects() {
-    try {
-      const data = await getAllProjects();
-      projects = data || [];
-      if (projects.length > 0 && !selectedProject) {
-        const paramProject = lockedProjectName();
-        selectedProject = paramProject && projects.includes(paramProject)
-          ? paramProject
-          : projects[0];
-      }
-      applyLockedProject();
-    } catch (e) {
-      console.error("Failed to load projects:", e);
-    }
-  }
-
-  async function refreshRunsAndMutation() {
-    await refreshRuns();
-    await refreshMutationAccess();
-  }
-
   async function refreshRuns() {
-    const project = selectedProject;
-    if (!project) {
-      runs = [];
-      selectedRuns = [];
-      availableSystemDevices = [];
-      selectedSystemDevices = [];
-      runConfigs = {};
-      runConfigsProject = null;
-      return;
-    }
-    if (project !== runConfigsProject) {
-      runConfigs = {};
-    }
     try {
       const [data, configs] = await Promise.all([
-        getRunsForProject(project),
-        getRunConfigs(project).catch(() => null),
+        getRunsForProject(),
+        getRunConfigs().catch(() => null),
       ]);
-      if (selectedProject !== project) return;
       const newRuns = [...(data || [])].reverse();
 
       if (JSON.stringify(runs) !== JSON.stringify(newRuns)) {
@@ -217,7 +159,6 @@
       }
       if (configs != null) {
         runConfigs = configs;
-        runConfigsProject = project;
       }
     } catch (e) {
       console.error("Failed to load runs:", e);
@@ -225,9 +166,8 @@
   }
 
   async function refreshAlerts() {
-    if (!selectedProject) return;
     try {
-      const data = await getAlerts(selectedProject, null, null, null);
+      const data = await getAlerts(null, null, null);
       alerts = (data || []).slice(-20);
     } catch {
       // ignore
@@ -256,13 +196,9 @@
     }
     lastTabAvailabilityRefreshAt = now;
     const requestId = ++tabAvailabilityRequestId;
-    if (!selectedProject) {
-      tabAvailability = initialAvailability();
-      return;
-    }
 
     try {
-      const flags = await getTabAvailability(selectedProject);
+      const flags = await getTabAvailability();
       if (requestId !== tabAvailabilityRequestId) return;
       const availability = {
         ...initialAvailability(),
@@ -292,62 +228,11 @@
       if (!realtimeEnabled) return;
       if (isTabHidden()) return;
       if (isRateLimitCooldownActive()) return;
-      await refreshProjects();
       await refreshRuns();
       await refreshAlerts();
       await refreshTabAvailability();
     }, getAppPollIntervalMs());
   }
-
-  function applyUrlTokens() {
-    const params = new URLSearchParams(window.location.search);
-    let changed = false;
-    const wt = params.get("write_token");
-    if (wt) {
-      const maxAge = 60 * 60 * 24 * 7;
-      document.cookie = `trackio_write_token=${encodeURIComponent(wt)}; path=/; max-age=${maxAge}; SameSite=Lax`;
-      params.delete("write_token");
-      changed = true;
-    }
-    const oauthSession = params.get("oauth_session");
-    if (oauthSession) {
-      sessionStorage.setItem("trackio_oauth_session", oauthSession);
-      params.delete("oauth_session");
-      changed = true;
-    }
-    if (changed) {
-      const q = params.toString();
-      const path = window.location.pathname + (q ? `?${q}` : "");
-      window.history.replaceState({}, "", path);
-    }
-  }
-
-  async function refreshMutationAccess() {
-    try {
-      const s = await getRunMutationStatus();
-      mutationStatus = {
-        spaces: !!s.spaces,
-        allowed: !!s.allowed,
-        auth: s.auth ?? "none",
-      };
-    } catch {
-      mutationStatus = { spaces: false, allowed: true, auth: "local" };
-    }
-  }
-
-  function startMutationPolling() {
-    if (mutationPollTimer) clearInterval(mutationPollTimer);
-    mutationPollTimer = setInterval(() => {
-      refreshMutationAccess();
-    }, 120000);
-  }
-
-  $effect(() => {
-    selectedProject;
-    availableSystemDevices = [];
-    selectedSystemDevices = [];
-    refreshRuns();
-  });
 
   $effect(() => {
     urlTick;
@@ -400,24 +285,9 @@
     window.addEventListener("popstate", () => {
       currentPage = getPageFromPath();
       urlTick++;
-      applyLockedProject();
     });
 
-    applyUrlTokens();
-
     (async () => {
-      const staticMode = await isStaticMode();
-
-      if (!staticMode) {
-        refreshMutationAccess();
-        startMutationPolling();
-        window.addEventListener("focus", refreshMutationAccess);
-      } else {
-        realtimeEnabled = false;
-        mutationStatus = { spaces: false, allowed: false, auth: "static" };
-        readOnlySource = await getReadOnlySource();
-      }
-
       try {
         try {
           const settings = await getSettings();
@@ -427,48 +297,30 @@
             if (settings.plot_order) plotOrder = settings.plot_order;
             if (settings.table_truncate_length) tableTruncateLength = settings.table_truncate_length;
             if (settings.media_dir) setMediaDir(settings.media_dir);
-            if (settings.space_id) spaceId = settings.space_id;
+            if (settings.project_name) projectName = settings.project_name;
           }
         } catch {
           // settings endpoint may not be available
         }
-        await refreshProjects();
         await refreshRuns();
 
         await refreshAlerts();
         await refreshTabAvailability({ force: true });
       } catch (e) {
-        console.error("Failed to load projects:", e);
+        console.error("Failed to load dashboard data:", e);
       } finally {
         appBootstrapReady = true;
       }
 
-      if (!staticMode) {
-        startPolling();
-      }
+      startPolling();
     })();
 
     return () => {
       if (pollTimer) clearInterval(pollTimer);
-      if (mutationPollTimer) clearInterval(mutationPollTimer);
-      window.removeEventListener("focus", refreshMutationAccess);
     };
   });
 
-  let projectLocked = $derived.by(() => {
-    urlTick;
-    const n = lockedProjectName();
-    return !!(n && projects.includes(n));
-  });
-
   $effect(() => {
-    projects;
-    urlTick;
-    if (projectLocked) applyLockedProject();
-  });
-
-  $effect(() => {
-    selectedProject;
     runs;
     if (appBootstrapReady) refreshTabAvailability({ force: true });
   });
@@ -489,7 +341,6 @@
   $effect(() => {
     if (urlRunsFromQueryApplied) return;
     if (!appBootstrapReady) return;
-    if (!selectedProject) return;
     const runIdsParam = getQueryParam("run_ids");
     const runsParam = getQueryParam("runs");
     if (!runIdsParam && !runsParam) {
@@ -538,13 +389,7 @@
       bind:open={sidebarOpen}
       variant={sidebarVariant}
       {currentPage}
-      spacesMode={mutationStatus.spaces}
-      runMutationAllowed={mutationStatus.allowed}
-      mutationAuth={mutationStatus.auth}
-      {readOnlySource}
-      {projects}
-      projectLocked={projectLocked}
-      bind:selectedProject
+      {projectName}
       {runs}
       {runConfigs}
       bind:selectedRuns
@@ -552,6 +397,8 @@
       bind:xAxis
       bind:logScaleX
       bind:logScaleY
+      bind:outlierFilterHead
+      bind:outlierFilterTail
       bind:metricFilter
       bind:realtimeEnabled
       bind:showHeaders
@@ -559,7 +406,6 @@
       {metricColumns}
       {availableSystemDevices}
       bind:selectedSystemDevices
-      {spaceId}
       {logoUrls}
       {darkMode}
     />
@@ -579,13 +425,14 @@
     <div class="page-content">
       {#if currentPage === "metrics"}
         <Metrics
-          project={selectedProject}
           selectedRuns={selectedRunRecords}
           allRuns={runs}
           {smoothing}
           {xAxis}
           {logScaleX}
           {logScaleY}
+          {outlierFilterHead}
+          {outlierFilterTail}
           {metricFilter}
           {showHeaders}
           {appBootstrapReady}
@@ -595,12 +442,10 @@
         />
       {:else if currentPage === "traces"}
         <Traces
-          project={selectedProject}
           selectedRuns={selectedRunRecords}
         />
       {:else if currentPage === "system"}
         <SystemMetrics
-          project={selectedProject}
           selectedRuns={selectedRunRecords}
           allRuns={runs}
           {smoothing}
@@ -611,27 +456,24 @@
         />
       {:else if currentPage === "media"}
         <Media
-          project={selectedProject}
           selectedRuns={selectedRunRecords}
           allRuns={runs}
           {tableTruncateLength}
         />
       {:else if currentPage === "reports"}
-        <Reports project={selectedProject} selectedRuns={selectedRunRecords} />
+        <Reports selectedRuns={selectedRunRecords} />
       {:else if currentPage === "runs"}
         <Runs
-          project={selectedProject}
           {runs}
           {filterText}
-          onRunsChanged={refreshRunsAndMutation}
-          runMutationAllowed={mutationStatus.allowed}
+          onRunsChanged={refreshRuns}
         />
       {:else if currentPage === "run-detail"}
-        <RunDetail project={selectedProject} />
+        <RunDetail />
       {:else if currentPage === "files"}
-        <Files project={selectedProject} />
+        <Files />
       {:else if currentPage === "settings"}
-        <Settings {spaceId} selectedProject={selectedProject} {projects} />
+        <Settings {projectName} />
       {/if}
     </div>
   </div>

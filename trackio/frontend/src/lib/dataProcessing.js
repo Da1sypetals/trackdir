@@ -137,7 +137,28 @@ export function getMetricColumns(rows) {
   return getNumericColumns(rows).filter((c) => !RESERVED_KEYS.includes(c));
 }
 
-export function computeMetricPlotData(masterData, xColumn, metric, xLim) {
+export function filterOutlierExtent(values, { head = 0, tail = 0 } = {}) {
+  if (values.length === 0) return undefined;
+  if (!(head > 0) && !(tail > 0)) {
+    return [Math.min(...values), Math.max(...values)];
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const tailCount = tail > 0 ? Math.ceil(n * tail) : 0;
+  const headCount = head > 0 ? Math.ceil(n * head) : 0;
+  if (tailCount + headCount >= n) {
+    return [sorted[0], sorted[n - 1]];
+  }
+  return [sorted[tailCount], sorted[n - headCount - 1]];
+}
+
+export function computeMetricPlotData(
+  masterData,
+  xColumn,
+  metric,
+  xLim,
+  outlierFilter = null,
+) {
   let relevant = masterData.filter(
     (r) => r[metric] != null && r[metric] !== undefined,
   );
@@ -166,16 +187,12 @@ export function computeMetricPlotData(masterData, xColumn, metric, xLim) {
   );
   let yExtent = undefined;
   if (originals.length > 0) {
-    let yMin = Infinity;
-    let yMax = -Infinity;
+    const values = [];
     for (const r of originals) {
       const v = r[metric];
-      if (v != null) {
-        if (v < yMin) yMin = v;
-        if (v > yMax) yMax = v;
-      }
+      if (v != null && Number.isFinite(v)) values.push(v);
     }
-    if (yMin !== Infinity) yExtent = [yMin, yMax];
+    yExtent = filterOutlierExtent(values, outlierFilter ?? {});
   }
   return {
     data: downsample(relevant, xColumn, metric, "series_key", xLim, [

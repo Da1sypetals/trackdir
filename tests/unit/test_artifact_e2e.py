@@ -8,13 +8,14 @@ def test_master_plan_example_runs_verbatim(temp_dir, tmp_path, monkeypatch):
     weights.write_bytes(b"\x00" * 1024)
     monkeypatch.chdir(tmp_path)
 
-    trackio.init(project="art-demo")
+    project_dir = temp_dir / "art-demo"
+    trackio.init(dir=project_dir)
     art = trackio.Artifact(name="my-model", type="model", metadata={"acc": 0.91})
     art.add_file(weights)
     trackio.log_artifact(art, aliases=["best"])
     trackio.finish()
 
-    trackio.init(project="art-demo")
+    trackio.init(dir=project_dir)
     fetched = trackio.use_artifact("my-model:latest")
     out = fetched.download()
     trackio.finish()
@@ -40,13 +41,14 @@ def test_add_dir_round_trip(temp_dir, tmp_path):
     sub.mkdir()
     (sub / "vocab.txt").write_bytes(b"alpha\nbeta\n")
 
-    trackio.init(project="art-dir", name="producer")
+    project_dir = temp_dir / "art-dir"
+    trackio.init(dir=project_dir, name="producer")
     art = trackio.Artifact(name="bundle", type="model")
     art.add_dir(src)
     trackio.log_artifact(art)
     trackio.finish()
 
-    trackio.init(project="art-dir", name="consumer")
+    trackio.init(dir=project_dir, name="consumer")
     fetched = trackio.use_artifact("bundle:latest")
     out = Path(fetched.download(tmp_path / "dl"))
     trackio.finish()
@@ -62,17 +64,18 @@ def test_multi_version_lifecycle_with_alias_rotation(temp_dir, tmp_path):
         1: b"weights-v1",
         2: b"weights-v2",
     }
+    project_dir = temp_dir / "art-multi"
     for i, payload in versions.items():
         p = tmp_path / f"w{i}.bin"
         p.write_bytes(payload)
-        trackio.init(project="art-multi", name=f"run-{i}")
+        trackio.init(dir=project_dir, name=f"run-{i}")
         art = trackio.Artifact(name="m", type="model")
         art.add_file(p)
         aliases = ["best"] if i == 1 else None
         trackio.log_artifact(art, aliases=aliases)
         trackio.finish()
 
-    trackio.init(project="art-multi", name="consumer")
+    trackio.init(dir=project_dir, name="consumer")
     assert trackio.use_artifact("m").version == "v2"
     assert trackio.use_artifact("m:latest").version == "v2"
     assert trackio.use_artifact("m:best").version == "v1"
@@ -80,3 +83,21 @@ def test_multi_version_lifecycle_with_alias_rotation(temp_dir, tmp_path):
     assert trackio.use_artifact("m:v1").version == "v1"
     assert trackio.use_artifact("m:v2").version == "v2"
     trackio.finish()
+
+
+def test_artifact_blobs_stay_in_project_dir(temp_dir, tmp_path):
+    weights = tmp_path / "weights.bin"
+    weights.write_bytes(b"\x00" * 512)
+
+    project_dir = temp_dir / "art-local"
+    trackio.init(dir=project_dir)
+    art = trackio.Artifact(name="m", type="model")
+    art.add_file(weights)
+    logged = trackio.log_artifact(art)
+    trackio.finish()
+
+    blobs_root = project_dir / "artifacts" / "blobs" / "sha256"
+    assert blobs_root.is_dir()
+    blobs = list(blobs_root.rglob("*"))
+    assert any(b.is_file() for b in blobs)
+    assert logged.manifest[0]["size"] == 512

@@ -3,8 +3,7 @@ import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from trackio.media.utils import get_project_media_path
-from trackio.utils import MEDIA_DIR
+from trackio import utils
 
 
 class TrackioMedia(ABC):
@@ -28,6 +27,7 @@ class TrackioMedia(ABC):
         self.caption = caption
         self._value = value
         self._file_path: Path | None = None
+        self._project_dir: Path | None = None
 
         if isinstance(self._value, str | Path):
             if not os.path.isfile(self._value):
@@ -47,20 +47,24 @@ class TrackioMedia(ABC):
         return self._file_path
 
     def _get_absolute_file_path(self) -> Path | None:
-        if self._file_path:
-            return MEDIA_DIR / self._file_path
+        if self._file_path and self._project_dir:
+            return utils.media_dir(self._project_dir) / self._file_path
         return None
 
-    def _save(self, project: str, run: str, step: int = 0):
+    def _save(self, project_dir: str | Path, run: str, step: int = 0):
         if self._file_path:
             return
 
-        media_dir = get_project_media_path(project=project, run=run, step=step)
+        self._project_dir = Path(project_dir).expanduser().resolve()
+        media_path = utils.get_project_media_path(
+            project_dir=self._project_dir, run=run, step=step
+        )
+        media_path.mkdir(parents=True, exist_ok=True)
         filename = f"{uuid.uuid4()}.{self._file_extension()}"
-        file_path = media_dir / filename
+        file_path = media_path / filename
 
         self._save_media(file_path)
-        self._file_path = file_path.relative_to(MEDIA_DIR)
+        self._file_path = file_path.relative_to(utils.media_dir(self._project_dir))
 
     @abstractmethod
     def _save_media(self, file_path: Path):

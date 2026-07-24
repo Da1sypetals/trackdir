@@ -5,16 +5,14 @@ import pytest
 
 from trackio.media import TrackioAudio, TrackioImage, TrackioVideo
 
-PROJECT_NAME = "test_project"
-
 
 @pytest.mark.parametrize("image", ["image_ndarray", "image_pil", "image_path"])
 def test_image_save(image, temp_dir, request):
     image_value = request.getfixturevalue(image)
     image = TrackioImage(image_value)
-    image._save(PROJECT_NAME, "test_run", 0)
+    image._save(temp_dir, "test_run", 0)
 
-    expected_rel_dir = Path(PROJECT_NAME) / "test_run" / "0"
+    expected_rel_dir = Path("test_run") / "0"
     assert str(image._get_relative_file_path()).startswith(str(expected_rel_dir))
     assert str(image._get_absolute_file_path()).endswith(".png")
     assert image._get_absolute_file_path().is_file()
@@ -25,7 +23,7 @@ def test_image_serialization(image_ndarray, temp_dir):
         image_ndarray,
         caption="test_caption",
     )
-    image._save(PROJECT_NAME, "test_run", 0)
+    image._save(temp_dir, "test_run", 0)
     value = image._to_dict()
 
     assert value is not None
@@ -40,9 +38,9 @@ def test_image_serialization(image_ndarray, temp_dir):
 def test_video_save(video, temp_dir, request):
     video_value = request.getfixturevalue(video)
     video = TrackioVideo(video_value, format="mp4")
-    video._save(PROJECT_NAME, "test_run", 0)
+    video._save(temp_dir, "test_run", 0)
 
-    expected_rel_dir = Path(PROJECT_NAME) / "test_run" / "0"
+    expected_rel_dir = Path("test_run") / "0"
     assert str(video._get_relative_file_path()).startswith(str(expected_rel_dir))
     assert str(video._get_absolute_file_path()).endswith(".mp4")
     assert video._get_absolute_file_path().is_file()
@@ -50,7 +48,7 @@ def test_video_save(video, temp_dir, request):
 
 def test_video_serialization(video_ndarray_batch, temp_dir):
     video = TrackioVideo(video_ndarray_batch, format="mp4", caption="test_caption")
-    video._save(PROJECT_NAME, "test_run", 0)
+    video._save(temp_dir, "test_run", 0)
     value = video._to_dict()
 
     assert value is not None
@@ -63,9 +61,9 @@ def test_video_serialization(video_ndarray_batch, temp_dir):
 def test_audio_save(audio, temp_dir, request):
     audio_value = request.getfixturevalue(audio)
     audio = TrackioAudio(audio_value, format="wav", sample_rate=16000)
-    audio._save(PROJECT_NAME, "test_run", 0)
+    audio._save(temp_dir, "test_run", 0)
 
-    expected_rel_dir = Path(PROJECT_NAME) / "test_run" / "0"
+    expected_rel_dir = Path("test_run") / "0"
     assert str(audio._get_relative_file_path()).startswith(str(expected_rel_dir))
     assert str(audio._get_absolute_file_path()).endswith(".wav")
     assert audio._get_absolute_file_path().is_file()
@@ -75,7 +73,7 @@ def test_audio_serialization(audio_ndarray, temp_dir):
     audio = TrackioAudio(
         audio_ndarray, format="wav", sample_rate=16000, caption="test_caption"
     )
-    audio._save(PROJECT_NAME, "test_run", 0)
+    audio._save(temp_dir, "test_run", 0)
     value = audio._to_dict()
 
     assert value is not None
@@ -104,31 +102,25 @@ def test_invalid_type_raises(media_cls):
         media_cls(invalid_input)
 
 
-def test_project_media_dir_canonicalizes(temp_dir):
-    from trackio.utils import canonical_project_name, project_media_dir
-
-    assert canonical_project_name("my.model") == "mymodel"
-    assert project_media_dir("my.model") == project_media_dir("mymodel")
-    assert project_media_dir("my.model").name == "mymodel"
-
-
-def test_media_relative_path_uses_canonical_project(image_ndarray, temp_dir):
+def test_media_relative_path_uses_project_dir(image_ndarray, temp_dir):
     image = TrackioImage(image_ndarray)
-    image._save("my.model", "run", 0)
+    image._save(temp_dir, "run", 0)
 
     rel = str(image._get_relative_file_path())
-    assert rel.startswith(str(Path("mymodel") / "run" / "0"))
-    assert "my.model" not in rel
+    assert rel.startswith(str(Path("run") / "0"))
     assert image._get_absolute_file_path().is_file()
+    # media lives inside the project directory
+    assert str(image._get_absolute_file_path()).startswith(str(temp_dir.resolve()))
 
 
-def test_get_project_files_resolves_dotted_project(temp_dir):
+def test_get_project_files(temp_dir):
     from trackio import server
-    from trackio.utils import project_media_dir
+    from trackio.utils import files_dir
 
-    files_dir = project_media_dir("my.model") / "files"
-    files_dir.mkdir(parents=True, exist_ok=True)
-    (files_dir / "weights.bin").write_bytes(b"hello")
+    target = files_dir(temp_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "weights.bin").write_bytes(b"hello")
 
-    found = server.get_project_files("mymodel")
+    registry = server.build_api_registry(temp_dir)
+    found = registry["get_project_files"]()
     assert any(f["name"] == "weights.bin" for f in found)

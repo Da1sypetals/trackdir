@@ -13,10 +13,10 @@ def _url_with_query(base_url: str, params: dict[str, str]) -> str:
 
 
 def test_share_view_query_params_apply(temp_dir):
-    project = "test_share_qp"
+    project_dir = temp_dir / "test_share_qp"
     run_ids_by_name: dict[str, list[str]] = {}
     for name in ("run-alpha", "run-beta", "run-alpha"):
-        run = trackio.init(project=project, name=name)
+        run = trackio.init(dir=project_dir, name=name)
         run_ids_by_name.setdefault(name, []).append(run.id)
         for _ in range(3):
             trackio.log(metrics={"loss": 0.1, "accuracy": 0.9})
@@ -25,8 +25,8 @@ def test_share_view_query_params_apply(temp_dir):
     alpha_ids = run_ids_by_name["run-alpha"]
     assert len(alpha_ids) == 2
 
-    app, _, _, full_url = trackio.show(
-        project=project, block_thread=False, open_browser=False
+    app, base_url = trackio.show(
+        dir=project_dir, block_thread=False, open_browser=False
     )
 
     try:
@@ -36,9 +36,8 @@ def test_share_view_query_params_apply(temp_dir):
             page.set_default_timeout(15000)
 
             primary = _url_with_query(
-                full_url,
+                base_url,
                 {
-                    "project": project,
                     "run_ids": alpha_ids[0],
                     "metric_filter": "^loss$",
                     "sidebar": "hidden",
@@ -58,9 +57,8 @@ def test_share_view_query_params_apply(temp_dir):
             expect(page.locator(".metrics-page .legend-dot")).to_have_count(1)
 
             duplicate = _url_with_query(
-                full_url,
+                base_url,
                 {
-                    "project": project,
                     "run_ids": ",".join(alpha_ids),
                     "metric_filter": "^loss$",
                     "sidebar": "hidden",
@@ -76,9 +74,8 @@ def test_share_view_query_params_apply(temp_dir):
             expect(page.locator(".metrics-page .legend-dot")).to_have_count(2)
 
             legacy = _url_with_query(
-                full_url,
+                base_url,
                 {
-                    "project": project,
                     "runs": "run-beta",
                     "metrics": "loss",
                     "sidebar": "hidden",
@@ -95,5 +92,4 @@ def test_share_view_query_params_apply(temp_dir):
 
             browser.close()
     finally:
-        trackio.delete_project(project, force=True)
         app.close()

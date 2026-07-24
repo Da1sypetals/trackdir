@@ -52,12 +52,12 @@ def validate_aliases(aliases: list[str] | None) -> list[str]:
     return validated
 
 
-def _project_blobs_root(project: str) -> Path:
-    return utils.project_artifacts_dir(project) / "blobs" / "sha256"
+def _project_blobs_root(project_dir: str | Path) -> Path:
+    return utils.artifacts_dir(project_dir) / "blobs" / "sha256"
 
 
-def blob_path(project: str, digest: Sha256Digest) -> Path:
-    return _project_blobs_root(project) / digest[:2] / digest
+def blob_path(project_dir: str | Path, digest: Sha256Digest) -> Path:
+    return _project_blobs_root(project_dir) / digest[:2] / digest
 
 
 def hash_file(path: Path) -> tuple[Sha256Digest, int]:
@@ -174,12 +174,14 @@ def stage_blob_from_file(
     stage_blob_from_chunks(_file_chunks(), claimed_digest, target_path)
 
 
-def stage_blob_into_project(src_path: Path, project: str) -> tuple[Sha256Digest, int]:
+def stage_blob_into_project(
+    src_path: Path, project_dir: str | Path
+) -> tuple[Sha256Digest, int]:
     """Copy `src_path` into the project's CAS in a single pass, computing its
     sha256 and size while writing. Returns `(digest, size)`. If the blob is
     already present, the copy is discarded.
     """
-    blobs_root = _project_blobs_root(project)
+    blobs_root = _project_blobs_root(project_dir)
     blobs_root.mkdir(parents=True, exist_ok=True)
     partial = blobs_root / f".partial.{uuid.uuid4().hex}"
     sha = hashlib.sha256()
@@ -191,7 +193,7 @@ def stage_blob_into_project(src_path: Path, project: str) -> tuple[Sha256Digest,
                 dst.write(chunk)
                 size += len(chunk)
         digest = Sha256Digest(sha.hexdigest())
-        target = blob_path(project, digest)
+        target = blob_path(project_dir, digest)
         if target.is_file():
             partial.unlink(missing_ok=True)
             return digest, size

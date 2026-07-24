@@ -26,25 +26,30 @@ class Trace:
         self.metadata = dict(metadata) if metadata is not None else {}
 
     def _serialize_nested_value(
-        self, value: Any, project: str, run: str, step: int
+        self, value: Any, project_dir, run: str, step: int
     ) -> Any:
         if isinstance(value, TrackioMedia):
-            value._save(project, run, step)
+            value._save(project_dir, run, step)
             return value._to_dict()
         if isinstance(value, dict):
             return {
-                key: self._serialize_nested_value(item, project, run, step)
+                key: self._serialize_nested_value(item, project_dir, run, step)
                 for key, item in value.items()
             }
         if isinstance(value, list):
             return [
-                self._serialize_nested_value(item, project, run, step) for item in value
+                self._serialize_nested_value(item, project_dir, run, step)
+                for item in value
             ]
         return value
 
-    def _to_dict(self, project: str, run: str, step: int = 0) -> dict[str, Any]:
+    def _to_dict(self, project_dir, run: str, step: int = 0) -> dict[str, Any]:
         return {
             "_type": self.TYPE,
-            "messages": self._serialize_nested_value(self.messages, project, run, step),
-            "metadata": self._serialize_nested_value(self.metadata, project, run, step),
+            "messages": self._serialize_nested_value(
+                self.messages, project_dir, run, step
+            ),
+            "metadata": self._serialize_nested_value(
+                self.metadata, project_dir, run, step
+            ),
         }

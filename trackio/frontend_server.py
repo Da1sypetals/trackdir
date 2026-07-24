@@ -103,19 +103,16 @@ class FrontendMiddleware(BaseHTTPMiddleware):
         self.index_html_path = index_html_path
         self.reserved_prefixes = (
             "/api/",
+            "/api_info",
             "/file",
             "/version",
             "/artifact_blob/",
             "/static/trackio",
             "/__trackio/frontend_version",
-            "/oauth/",
-            "/login/",
             "/mcp",
         )
         self.reserved_exact = {
             "/api",
-            "/oauth",
-            "/login",
         }
 
     async def dispatch(self, request, call_next):

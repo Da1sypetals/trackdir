@@ -4,9 +4,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub.constants import HF_HOME
-
-TRACKIO_USER_HOME = Path(HF_HOME) / "trackio"
+TRACKIO_USER_HOME = Path(os.environ.get("TRACKIO_HOME", Path.home() / ".trackio"))
 TRACKIO_CONFIG_PATH = TRACKIO_USER_HOME / "config.json"
 BUNDLED_FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 STARTER_FRONTEND_DIR = Path(__file__).parent / "frontend_templates" / "starter"

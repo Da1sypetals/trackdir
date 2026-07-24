@@ -32,6 +32,22 @@
   let fullscreenHost = $state(null);
   let view = $state(null);
   let fullscreen = $state(false);
+  let yZeroBaseline = $state(false);
+
+  let effectiveYExtent = $derived.by(() => {
+    if (!yZeroBaseline) return yExtent;
+    let dataMax = yExtent ? yExtent[1] : undefined;
+    if (dataMax == null) {
+      let max = -Infinity;
+      for (const d of data) {
+        const v = d[y];
+        if (typeof v === "number" && Number.isFinite(v) && v > max) max = v;
+      }
+      dataMax = max === -Infinity ? undefined : max;
+    }
+    if (dataMax == null || dataMax <= 0) return yExtent;
+    return [0, dataMax];
+  });
 
   let lastStructuralKey = null;
   let lastHasSmoothed = false;
@@ -156,7 +172,7 @@
     const yEnc = {
       field: y,
       type: "quantitative",
-      ...(yExtent ? { scale: { domain: yExtent } } : {}),
+      ...(effectiveYExtent ? { scale: { domain: effectiveYExtent } } : {}),
     };
     const colorEnc = hasColor
       ? {
@@ -307,8 +323,10 @@
     const { originalData } = splitData();
     const xDomain = computeXDomain(originalData);
     const xKey = xDomain ? `${xDomain[0]},${xDomain[1]}` : "auto";
-    const yKey = yExtent ? `${yExtent[0]},${yExtent[1]}` : "auto";
-    return `${y}\0${x}\0${colorSpecKey}\0${dashSpecKey}\0${title}\0${fullscreen}\0${!!onSelect}\0${xKey}\0${yKey}`;
+    const yKey = effectiveYExtent
+      ? `${effectiveYExtent[0]},${effectiveYExtent[1]}`
+      : "auto";
+    return `${y}\0${x}\0${colorSpecKey}\0${dashSpecKey}\0${title}\0${fullscreen}\0${!!onSelect}\0${xKey}\0${yKey}\0${yZeroBaseline}`;
   }
 
   function replaceDataset(v, name, newData) {
@@ -526,6 +544,7 @@
     dashSpecKey;
     xLim;
     yExtent;
+    yZeroBaseline;
     title;
     fullscreen;
     container;
@@ -576,6 +595,25 @@
   ondrop={draggable ? ondrop : undefined}
 >
   <div class="plot-toolbar">
+    <button
+      type="button"
+      class="toolbar-btn"
+      class:toolbar-btn-active={yZeroBaseline}
+      onclick={() => { yZeroBaseline = !yZeroBaseline; }}
+      title={yZeroBaseline
+        ? "Y-axis bottom is pinned to 0 — click to restore automatic scaling"
+        : "Pin the y-axis bottom to 0"}
+      aria-label={yZeroBaseline
+        ? "Y-axis bottom is pinned to 0 — click to restore automatic scaling"
+        : "Pin the y-axis bottom to 0"}
+      aria-pressed={yZeroBaseline}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="6" y1="3" x2="6" y2="18"/>
+        <line x1="6" y1="18" x2="21" y2="18"/>
+        <text x="2" y="22" font-size="7" fill="currentColor" stroke="none">0</text>
+      </svg>
+    </button>
     <button
       type="button"
       class="toolbar-btn"
@@ -703,6 +741,25 @@
 {#if fullscreen}
   <div class="fullscreen-host" bind:this={fullscreenHost}>
     <div class="fullscreen-toolbar">
+      <button
+        type="button"
+        class="toolbar-btn"
+        class:toolbar-btn-active={yZeroBaseline}
+        onclick={() => { yZeroBaseline = !yZeroBaseline; }}
+        title={yZeroBaseline
+          ? "Y-axis bottom is pinned to 0 — click to restore automatic scaling"
+          : "Pin the y-axis bottom to 0"}
+        aria-label={yZeroBaseline
+          ? "Y-axis bottom is pinned to 0 — click to restore automatic scaling"
+          : "Pin the y-axis bottom to 0"}
+        aria-pressed={yZeroBaseline}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="6" y1="3" x2="6" y2="18"/>
+          <line x1="6" y1="18" x2="21" y2="18"/>
+          <text x="2" y="22" font-size="7" fill="currentColor" stroke="none">0</text>
+        </svg>
+      </button>
       <button
         type="button"
         class="toolbar-btn"
@@ -883,6 +940,11 @@
   .toolbar-btn:hover {
     background: var(--neutral-100, #f3f4f6);
     color: var(--body-text-color, #1f2937);
+  }
+  .toolbar-btn-active,
+  .toolbar-btn-active:hover {
+    border-color: var(--color-accent, #f97316);
+    color: var(--color-accent, #f97316);
   }
   .plot-chart-wrap {
     position: relative;

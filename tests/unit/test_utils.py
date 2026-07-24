@@ -1,8 +1,6 @@
 import os
 import random
-import tempfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -83,36 +81,6 @@ def test_format_timestamp():
 
 
 @pytest.mark.parametrize(
-    "api_url, project, write_token, expected",
-    [
-        (
-            "https://example.com",
-            "my_project",
-            "token123",
-            "https://example.com?project=my_project&write_token=token123",
-        ),
-        ("https://api.test.io", None, "abc", "https://api.test.io?write_token=abc"),
-        (
-            "http://localhost:8000",
-            "test",
-            "secret",
-            "http://localhost:8000?project=test&write_token=secret",
-        ),
-        ("https://app.com/api", "", "xyz789", "https://app.com/api?write_token=xyz789"),
-        (
-            "https://trackio.ai",
-            "demo/project",
-            "tok_en",
-            "https://trackio.ai?project=demo/project&write_token=tok_en",
-        ),
-    ],
-)
-def test_get_full_url(api_url, project, write_token, expected):
-    result = utils.get_full_url(api_url, project, write_token)
-    assert result == expected
-
-
-@pytest.mark.parametrize(
     "obj, expected",
     [
         ("hello", "hello"),
@@ -151,20 +119,6 @@ def test_to_json_safe_with_object():
         "bias": "none",
         "task_type": "CAUSAL_LM",
     }
-
-
-def test_trackio_dir_env_var(monkeypatch):
-    """Test that TRACKIO_DIR environment variable is respected."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        test_path = str(tmpdir)
-
-        monkeypatch.setenv("TRACKIO_DIR", test_path)
-        result_dir = utils._get_trackio_dir()
-        assert str(result_dir) == test_path
-
-        monkeypatch.delenv("TRACKIO_DIR", raising=False)
-        result_dir = utils._get_trackio_dir()
-        assert "huggingface/trackio" in Path(result_dir).as_posix()
 
 
 def test_plot_ordering():

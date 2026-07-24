@@ -18,7 +18,6 @@
   import { buildColorMap } from "../lib/stores.js";
 
   let {
-    project = null,
     selectedRuns = [],
     allRuns = [],
     smoothing = 5,
@@ -145,7 +144,7 @@
   }
 
   function processFromCache() {
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       systemData = [];
       metricNames = [];
       return;
@@ -190,7 +189,7 @@
   async function fetchSystemLogsForRuns(runs) {
     if (batchEndpointAvailable && runs.length <= MAX_BATCH_RUNS) {
       try {
-        return await getSystemLogsBatch(project, runs);
+        return await getSystemLogsBatch(runs);
       } catch (e) {
         if (!isMissingEndpointError(e)) throw e;
         batchEndpointAvailable = false;
@@ -200,14 +199,14 @@
       const results = [];
       for (let i = 0; i < runs.length; i += MAX_BATCH_RUNS) {
         const chunk = runs.slice(i, i + MAX_BATCH_RUNS);
-        const batch = await getSystemLogsBatch(project, chunk);
+        const batch = await getSystemLogsBatch(chunk);
         results.push(...batch);
       }
       return results;
     }
     const results = [];
     for (const run of runs) {
-      const logs = await getSystemLogs(project, run);
+      const logs = await getSystemLogs(run);
       results.push({
         run: run?.name ?? null,
         run_id: run?.id ?? null,
@@ -222,7 +221,7 @@
       hasLoaded = false;
       return;
     }
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       systemData = [];
       metricNames = [];
       loadError = null;
@@ -262,7 +261,7 @@
 
   async function refreshCachedRuns() {
     if (!realtimeEnabled) return;
-    if (!project || selectedRuns.length === 0) return;
+    if (selectedRuns.length === 0) return;
     if (isTabHidden()) return;
     if (isRateLimitCooldownActive()) return;
 
@@ -287,10 +286,8 @@
   }
 
   $effect(() => {
-    project;
     selectedRuns;
     appBootstrapReady;
-    rawDataCache = project ? rawDataCache : new Map();
     fetchNewRuns();
   });
 
@@ -493,13 +490,6 @@
       <h2>Unable to load system metrics</h2>
       <p>{loadError}</p>
     </div>
-  {:else if !project}
-    <div class="empty-state">
-      <h2>No projects</h2>
-      <p>
-        Create a project by calling <code>trackio.init(project="…")</code> in your training script.
-      </p>
-    </div>
   {:else if selectedRuns.length === 0}
     <div class="empty-state">
       <h2>No run selected</h2>
@@ -509,7 +499,7 @@
     <div class="empty-state">
       <h2>No System Metrics Available</h2>
       <p>System metrics will appear here once logged. To enable automatic logging:</p>
-      <pre><code>{'import trackio\n\n# CPU/system metrics auto-enable when psutil is installed:\nrun = trackio.init(project="my-project")\n\n# Or explicitly enable/disable them:\nrun = trackio.init(project="my-project", auto_log_cpu=True)\n\n# Manually log at any time:\ntrackio.log_cpu()\ntrackio.log_gpu()'}</code></pre>
+      <pre><code>{'import trackio\n\n# CPU/system metrics auto-enable when psutil is installed:\nrun = trackio.init(dir="path/to/project")\n\n# Or explicitly enable/disable them:\nrun = trackio.init(dir="path/to/project", auto_log_cpu=True)\n\n# Manually log at any time:\ntrackio.log_cpu()\ntrackio.log_gpu()'}</code></pre>
       <p><strong>Setup:</strong></p>
       <ul>
         <li><strong>CPU/system metrics:</strong> <code>pip install trackio[cpu]</code> (requires <code>psutil</code>)</li>

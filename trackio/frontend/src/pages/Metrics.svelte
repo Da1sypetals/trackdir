@@ -22,13 +22,14 @@
   import { buildColorMap } from "../lib/stores.js";
 
   let {
-    project = null,
     selectedRuns = [],
     allRuns = [],
     smoothing = 10,
     xAxis = "step",
     logScaleX = false,
     logScaleY = false,
+    outlierFilterHead = 0,
+    outlierFilterTail = 0,
     metricFilter = "",
     showHeaders = true,
     appBootstrapReady = false,
@@ -63,7 +64,10 @@
   let groupNames = $derived(Object.keys(metricGroups));
 
   function getPlotResult(metric) {
-    return computeMetricPlotData(masterData, xColumn, metric, xLim);
+    return computeMetricPlotData(masterData, xColumn, metric, xLim, {
+      head: outlierFilterHead,
+      tail: outlierFilterTail,
+    });
   }
 
   function getOrderedMetrics(key, items) {
@@ -105,7 +109,7 @@
   }
 
   function processFromCache() {
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       masterData = [];
       metrics = [];
       return;
@@ -155,7 +159,7 @@
     const results = [];
     for (let i = 0; i < runs.length; i += MAX_BATCH_RUNS) {
       const chunk = runs.slice(i, i + MAX_BATCH_RUNS);
-      const batch = await getLogsBatch(project, chunk, { scalar_only: true });
+      const batch = await getLogsBatch(chunk, { scalar_only: true });
       results.push(...batch);
     }
     return results;
@@ -166,7 +170,7 @@
       hasLoaded = false;
       return;
     }
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       masterData = [];
       metrics = [];
       hasLoaded = true;
@@ -199,7 +203,7 @@
 
   async function refreshCachedRuns() {
     if (!realtimeEnabled) return;
-    if (!project || selectedRuns.length === 0) return;
+    if (selectedRuns.length === 0) return;
     if (isTabHidden()) return;
     if (isRateLimitCooldownActive()) return;
 
@@ -224,10 +228,8 @@
   }
 
   $effect(() => {
-    project;
     selectedRuns;
     appBootstrapReady;
-    rawDataCache = project ? rawDataCache : new Map();
     fetchNewRuns();
   });
 
@@ -275,13 +277,6 @@
 <div class="metrics-page">
   {#if !appBootstrapReady || !hasLoaded}
     <LoadingTrackio />
-  {:else if !project}
-    <div class="empty-state">
-      <h2>No projects</h2>
-      <p>
-        Create a project by calling <code>trackio.init(project="…")</code> in your training script.
-      </p>
-    </div>
   {:else if selectedRuns.length === 0}
     <div class="empty-state">
       <h2>No run selected</h2>
@@ -291,7 +286,7 @@
     <div class="empty-state">
       <h2>Start logging with Trackio</h2>
       <p>You can create a new project by calling <code>trackio.init()</code>:</p>
-      <pre><code>{'import trackio\ntrackio.init(project="my-project")'}</code></pre>
+      <pre><code>{'import trackio\ntrackio.init(dir="path/to/project")'}</code></pre>
       <p>Then call <code>trackio.log()</code> to log metrics:</p>
       <pre><code>{'for i in range(10):\n    trackio.log({"loss": 1/(i+1)})'}</code></pre>
       <p>Finally, call <code>trackio.finish()</code> to finish the run:</p>

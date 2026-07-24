@@ -5,7 +5,8 @@ import trackio
 
 
 def test_runs_plots_images_are_displayed(temp_dir):
-    trackio.init(project="test_project", name="test_run")
+    project_dir = temp_dir / "test_project"
+    trackio.init(dir=project_dir, name="test_run")
     trackio.log(metrics={"loss": 0.1})
     trackio.log(metrics={"loss": 0.2, "acc": 0.9})
 
@@ -16,8 +17,8 @@ def test_runs_plots_images_are_displayed(temp_dir):
 
     trackio.finish()
 
-    app, _, _, full_url = trackio.show(
-        project="test_project", block_thread=False, open_browser=False
+    app, base_url = trackio.show(
+        dir=project_dir, block_thread=False, open_browser=False
     )
 
     try:
@@ -25,7 +26,7 @@ def test_runs_plots_images_are_displayed(temp_dir):
             browser = p.chromium.launch()
             page = browser.new_page()
             page.set_default_timeout(5000)
-            page.goto(full_url)
+            page.goto(base_url)
             page.wait_for_load_state("networkidle")
             nav_links = page.locator(".nav-link")
             expect(nav_links).to_have_count(8)
@@ -55,18 +56,18 @@ def test_runs_plots_images_are_displayed(temp_dir):
 
             browser.close()
     finally:
-        trackio.delete_project("test_project", force=True)
         app.close()
 
 
 def test_latest_only_selects_last_run(temp_dir):
+    project_dir = temp_dir / "test_latest"
     for i in range(3):
-        trackio.init(project="test_latest", name=f"run-{i}")
+        trackio.init(dir=project_dir, name=f"run-{i}")
         trackio.log(metrics={"loss": 0.1 * (i + 1)})
         trackio.finish()
 
-    app, _, _, full_url = trackio.show(
-        project="test_latest", block_thread=False, open_browser=False
+    app, base_url = trackio.show(
+        dir=project_dir, block_thread=False, open_browser=False
     )
 
     try:
@@ -74,7 +75,7 @@ def test_latest_only_selects_last_run(temp_dir):
             browser = p.chromium.launch()
             page = browser.new_page()
             page.set_default_timeout(5000)
-            page.goto(full_url)
+            page.goto(base_url)
             page.wait_for_load_state("networkidle")
 
             checkboxes = page.locator(".checkbox-item input[type='checkbox']")
@@ -91,17 +92,17 @@ def test_latest_only_selects_last_run(temp_dir):
 
             browser.close()
     finally:
-        trackio.delete_project("test_latest", force=True)
         app.close()
 
 
 def test_navbar_page_navigation(temp_dir):
-    trackio.init(project="test_nav", name="nav_run")
+    project_dir = temp_dir / "test_nav"
+    trackio.init(dir=project_dir, name="nav_run")
     trackio.log(metrics={"loss": 0.5})
     trackio.finish()
 
-    app, _, _, full_url = trackio.show(
-        project="test_nav", block_thread=False, open_browser=False
+    app, base_url = trackio.show(
+        dir=project_dir, block_thread=False, open_browser=False
     )
 
     try:
@@ -109,7 +110,7 @@ def test_navbar_page_navigation(temp_dir):
             browser = p.chromium.launch()
             page = browser.new_page()
             page.set_default_timeout(5000)
-            page.goto(full_url)
+            page.goto(base_url)
             page.wait_for_load_state("networkidle")
             nav_links = page.locator(".nav-link")
             expect(nav_links).to_have_count(8)
@@ -130,18 +131,18 @@ def test_navbar_page_navigation(temp_dir):
 
             browser.close()
     finally:
-        trackio.delete_project("test_nav", force=True)
         app.close()
 
 
 def test_runs_table_shows_run_data(temp_dir):
-    trackio.init(project="test_runs_table", name="my-run")
+    project_dir = temp_dir / "test_runs_table"
+    trackio.init(dir=project_dir, name="my-run")
     for i in range(5):
         trackio.log(metrics={"loss": 1.0 / (i + 1)})
     trackio.finish()
 
-    app, _, _, full_url = trackio.show(
-        project="test_runs_table", block_thread=False, open_browser=False
+    app, base_url = trackio.show(
+        dir=project_dir, block_thread=False, open_browser=False
     )
 
     try:
@@ -149,7 +150,7 @@ def test_runs_table_shows_run_data(temp_dir):
             browser = p.chromium.launch()
             page = browser.new_page()
             page.set_default_timeout(5000)
-            page.goto(full_url)
+            page.goto(base_url)
             page.wait_for_load_state("networkidle")
 
             nav_links = page.locator(".nav-link")
@@ -166,20 +167,20 @@ def test_runs_table_shows_run_data(temp_dir):
 
             browser.close()
     finally:
-        trackio.delete_project("test_runs_table", force=True)
         app.close()
 
 
 def test_multiple_runs_display_multiple_plots(temp_dir):
+    project_dir = temp_dir / "test_multi"
     for i in range(2):
-        trackio.init(project="test_multi", name=f"run-{i}")
+        trackio.init(dir=project_dir, name=f"run-{i}")
         for j in range(5):
             trackio.log(metrics={"loss": 0.1 * (j + 1), "acc": 0.9 - 0.1 * j})
         trackio.log(metrics={"val_loss": 0.05 * (i + 1)})
         trackio.finish()
 
-    app, _, _, full_url = trackio.show(
-        project="test_multi", block_thread=False, open_browser=False
+    app, base_url = trackio.show(
+        dir=project_dir, block_thread=False, open_browser=False
     )
 
     try:
@@ -187,7 +188,7 @@ def test_multiple_runs_display_multiple_plots(temp_dir):
             browser = p.chromium.launch()
             page = browser.new_page()
             page.set_default_timeout(5000)
-            page.goto(full_url)
+            page.goto(base_url)
             page.wait_for_load_state("networkidle")
 
             run_items = page.locator(".checkbox-item")
@@ -209,5 +210,4 @@ def test_multiple_runs_display_multiple_plots(temp_dir):
 
             browser.close()
     finally:
-        trackio.delete_project("test_multi", force=True)
         app.close()

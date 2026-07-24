@@ -3,7 +3,6 @@
   import { getMediaUrl, getTraces, getTraceSteps } from "../lib/api.js";
 
   let {
-    project = null,
     selectedRuns = [],
   } = $props();
 
@@ -73,14 +72,14 @@
 
   async function loadSummary() {
     const requestId = ++summaryRequestId;
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       availableSteps = [];
       totalCount = 0;
       return;
     }
     try {
       const results = await Promise.all(
-        selectedRuns.map((run) => getTraceSteps(project, run)),
+        selectedRuns.map((run) => getTraceSteps(run)),
       );
       if (requestId !== summaryRequestId) return;
       const merged = new Map();
@@ -105,7 +104,7 @@
 
   async function loadTraces(searchQuery, sort, stepValue, currentPage) {
     const requestId = ++loadRequestId;
-    if (!project || selectedRuns.length === 0) {
+    if (selectedRuns.length === 0) {
       traces = [];
       expandedTraceId = null;
       return;
@@ -121,7 +120,7 @@
 
       const batches = await Promise.all(
         selectedRuns.map(async (run) => {
-          const runTraces = await getTraces(project, run, {
+          const runTraces = await getTraces(run, {
             search: searchQuery,
             sort,
             step: stepNum,
@@ -157,7 +156,7 @@
   let lastStep = "all";
 
   $effect(() => {
-    const scopeKey = `${project || ""}::${runsKey(selectedRuns)}`;
+    const scopeKey = runsKey(selectedRuns);
     if (scopeKey !== lastScopeKey) {
       lastScopeKey = scopeKey;
       page = 0;
@@ -169,7 +168,6 @@
   });
 
   $effect(() => {
-    project;
     runsKey(selectedRuns);
     const trimmed = search.trim();
     if (trimmed !== lastSearch || sortBy !== lastSort || stepFilter !== lastStep) {
@@ -326,12 +324,7 @@
 </script>
 
 <div class="traces-page">
-  {#if !project}
-    <div class="empty-state">
-      <h2>Select a project</h2>
-      <p>Pick a project to browse trace logs.</p>
-    </div>
-  {:else if selectedRuns.length === 0}
+  {#if selectedRuns.length === 0}
     <div class="empty-state">
       <h2>No runs selected</h2>
       <p>Select one or more runs in the sidebar to browse traces.</p>

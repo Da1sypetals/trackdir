@@ -2,7 +2,7 @@
   import LoadingTrackio from "../components/LoadingTrackio.svelte";
   import { getAlerts, getLogs } from "../lib/api.js";
 
-  let { project = null, selectedRuns = [] } = $props();
+  let { selectedRuns = [] } = $props();
 
   let allAlerts = $state([]);
   let markdownReports = $state([]);
@@ -40,15 +40,9 @@
   });
 
   async function loadData() {
-    if (!project) {
-      allAlerts = [];
-      markdownReports = [];
-      return;
-    }
-
     loading = true;
     try {
-      const data = await getAlerts(project, null, null, null);
+      const data = await getAlerts(null, null, null);
       const selectedRunNames = new Set(selectedRuns.map((run) => run.name));
       allAlerts = (data || []).filter(
         (alert) => !alert.run || selectedRunNames.has(alert.run),
@@ -58,7 +52,7 @@
       const reports = [];
       for (const run of runsToLoad) {
         try {
-          const logs = await getLogs(project, run);
+          const logs = await getLogs(run);
           if (logs) {
             for (const log of logs) {
               for (const [key, value] of Object.entries(log)) {
@@ -87,7 +81,6 @@
   }
 
   $effect(() => {
-    project;
     selectedRuns;
     loadData();
   });
@@ -125,7 +118,7 @@
         Alerts are recorded when your training script calls <code>trackio.alert()</code>.
         Reports are logged as Markdown via <code>trackio.log()</code>.
       </p>
-      <pre><code>{'import trackio\nfrom trackio import AlertLevel\n\ntrackio.init(project="my-project")\ntrackio.alert("Low validation loss", text="Consider saving a checkpoint.", level=AlertLevel.INFO)\ntrackio.log({"reports/summary": trackio.Markdown("# My Report\\nResults look good.")})'}</code></pre>
+      <pre><code>{'import trackio\nfrom trackio import AlertLevel\n\ntrackio.init(dir="path/to/project")\ntrackio.alert("Low validation loss", text="Consider saving a checkpoint.", level=AlertLevel.INFO)\ntrackio.log({"reports/summary": trackio.Markdown("# My Report\\nResults look good.")})'}</code></pre>
     </div>
   {:else}
     {#if markdownReports.length > 0}

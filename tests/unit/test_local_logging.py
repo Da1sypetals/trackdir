@@ -8,10 +8,12 @@ import pytest
 import trackio
 from trackio import gpu
 from trackio.sqlite_storage import SQLiteStorage
+from trackio.utils import get_db_path
 
 
 def test_infinity_logging(temp_dir):
-    trackio.init(project="test_infinity", name="test_run")
+    project_dir = temp_dir / "test_infinity"
+    trackio.init(dir=project_dir, name="test_run")
     trackio.log(
         metrics={
             "loss": float("inf"),
@@ -22,7 +24,7 @@ def test_infinity_logging(temp_dir):
     )
     trackio.finish()
 
-    results = SQLiteStorage.get_logs(project="test_infinity", run="test_run")
+    results = SQLiteStorage.get_logs(get_db_path(project_dir), run="test_run")
     assert len(results) == 1
     log = results[0]
 
@@ -46,13 +48,14 @@ def test_import_from_csv(temp_dir, tmp_path):
         )
     )
 
+    project_dir = temp_dir / "test_project"
     trackio.import_csv(
         csv_path=str(csv_path),
-        project="test_project",
+        dir=project_dir,
         name="test_run",
     )
 
-    results = SQLiteStorage.get_logs(project="test_project", run="test_run")
+    results = SQLiteStorage.get_logs(get_db_path(project_dir), run="test_run")
     assert len(results) == 4
     assert results[0]["train/loss"] == 12.2
     assert results[0]["train/acc"] == 82.2
@@ -73,11 +76,12 @@ def test_import_from_csv(temp_dir, tmp_path):
 
 
 def test_reserved_keys_are_renamed(temp_dir):
+    project_dir = temp_dir / "test_reserved"
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        run = trackio.init(project="test_reserved", name="test_run")
+        run = trackio.init(dir=project_dir, name="test_run")
 
-        run.log({"step": 100, "time": 200, "project": "test", "normal_key": 42})
+        run.log({"step": 100, "time": 200, "normal_key": 42})
 
         reserved_warnings = [
             warning
@@ -85,21 +89,19 @@ def test_reserved_keys_are_renamed(temp_dir):
             if "Reserved keys renamed" in str(warning.message)
         ]
         assert len(reserved_warnings) == 1
-        assert "['step', 'time', 'project']" in str(reserved_warnings[0].message)
+        assert "['step', 'time']" in str(reserved_warnings[0].message)
 
         run.finish()
 
-    results = SQLiteStorage.get_logs(project="test_reserved", run="test_run")
+    results = SQLiteStorage.get_logs(get_db_path(project_dir), run="test_run")
     assert len(results) == 1
     log = results[0]
 
     assert "__step" in log
     assert "__time" in log
-    assert "__project" in log
     assert "normal_key" in log
     assert log["__step"] == 100
     assert log["__time"] == 200
-    assert log["__project"] == "test"
     assert log["normal_key"] == 42
 
 
@@ -114,12 +116,13 @@ def test_auto_log_gpu(temp_dir):
             "gpu/mean_utilization": 75,
         }
 
+    project_dir = temp_dir / "test_gpu_project"
     with patch.object(gpu, "collect_gpu_metrics", fake_gpu_metrics):
         with patch.object(gpu, "get_all_gpu_count", return_value=(1, [0])):
             with patch("trackio.run.gpu_available", return_value=True):
                 with patch("trackio.run.apple_gpu_available", return_value=False):
                     trackio.init(
-                        project="test_gpu_project",
+                        dir=project_dir,
                         name="test_gpu_run",
                         auto_log_gpu=True,
                         gpu_log_interval=0.1,
@@ -129,7 +132,7 @@ def test_auto_log_gpu(temp_dir):
                     trackio.finish()
 
     system_logs = SQLiteStorage.get_system_logs(
-        project="test_gpu_project", run="test_gpu_run"
+        get_db_path(project_dir), run="test_gpu_run"
     )
     assert len(system_logs) >= 1
     log = system_logs[0]
@@ -164,12 +167,13 @@ def test_auto_log_gpu_multi(temp_dir):
             )
         return metrics
 
+    project_dir = temp_dir / "test_gpu_multi"
     with patch.object(gpu, "collect_gpu_metrics", fake_gpu_metrics):
         with patch.object(gpu, "get_all_gpu_count", return_value=(2, [0, 1])):
             with patch("trackio.run.gpu_available", return_value=True):
                 with patch("trackio.run.apple_gpu_available", return_value=False):
                     trackio.init(
-                        project="test_gpu_multi",
+                        dir=project_dir,
                         name="test_gpu_multi_run",
                         auto_log_gpu=True,
                         gpu_log_interval=0.1,
@@ -179,7 +183,7 @@ def test_auto_log_gpu_multi(temp_dir):
                     trackio.finish()
 
     system_logs = SQLiteStorage.get_system_logs(
-        project="test_gpu_multi", run="test_gpu_multi_run"
+        get_db_path(project_dir), run="test_gpu_multi_run"
     )
     assert len(system_logs) >= 1
     log = system_logs[0]
@@ -203,6 +207,6 @@ def test_import_from_csv_without_numeric_metrics_raises(temp_dir, tmp_path):
     with pytest.raises(ValueError, match="No numeric metric data"):
         trackio.import_csv(
             csv_path=str(csv_path),
-            project="test_project_no_metrics",
+            dir=temp_dir / "test_project_no_metrics",
             name="test_run",
         )

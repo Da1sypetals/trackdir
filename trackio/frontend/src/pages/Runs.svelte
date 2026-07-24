@@ -7,14 +7,12 @@
   import { filterMetricsByRegex } from "../lib/dataProcessing.js";
 
   let {
-    project = null,
     runs = [],
     filterText = "",
     onRunsChanged = null,
-    runMutationAllowed = true,
   } = $props();
 
-  let canMutateRuns = $derived(runMutationAllowed);
+  const canMutateRuns = true;
 
   let runColorMap = $derived(buildColorMap(runs));
 
@@ -31,17 +29,12 @@
   });
 
   async function loadRuns() {
-    if (!project) {
-      runsData = [];
-      return;
-    }
-
     loading = true;
     try {
-      const summary = await getProjectSummary(project);
+      const summary = await getProjectSummary();
       const runRecords = summary.runs || [];
       const summaries = await Promise.all(
-        runRecords.map((run) => getRunSummary(project, run)),
+        runRecords.map((run) => getRunSummary(run)),
       );
       const data = summaries.map((s, i) => ({
         id: runRecords[i].id ?? runRecords[i].name,
@@ -59,7 +52,6 @@
   }
 
   $effect(() => {
-    project;
     loadRuns();
   });
 
@@ -67,7 +59,7 @@
     if (!canMutateRuns) return;
     if (!confirm(`Delete run "${run.name}"? This cannot be undone.`)) return;
     try {
-      await deleteRun(project, run);
+      await deleteRun(run);
       await loadRuns();
       if (onRunsChanged) onRunsChanged();
     } catch (e) {
@@ -92,7 +84,7 @@
       return;
     }
     try {
-      await renameRun(project, run, newName);
+      await renameRun(run, newName);
       renamingIndex = -1;
       await loadRuns();
       if (onRunsChanged) onRunsChanged();
@@ -114,7 +106,7 @@
     <div class="empty-state">
       <h2>No runs in this project</h2>
       <p>Runs are created when you call <code>trackio.init()</code> and log at least one step. Example:</p>
-      <pre><code>{'import trackio\ntrackio.init(project="my-project")\nfor i in range(10):\n    trackio.log({"loss": 1 / (i + 1)})\ntrackio.finish()'}</code></pre>
+      <pre><code>{'import trackio\ntrackio.init(dir="path/to/project")\nfor i in range(10):\n    trackio.log({"loss": 1 / (i + 1)})\ntrackio.finish()'}</code></pre>
       <p>Refresh this page or wait for the dashboard to poll; new runs appear in the table with step counts.</p>
     </div>
   {:else}
@@ -139,7 +131,7 @@
               <div class="actions-wrap">
               <button
                 class="action-btn"
-                title={canMutateRuns ? "Rename" : "Sign in with Hugging Face (write access) to rename runs"}
+                title="Rename"
                 disabled={!canMutateRuns}
                 onclick={() => startRename(i, run.name)}
               >
@@ -149,7 +141,7 @@
               </button>
               <button
                 class="action-btn delete-btn"
-                title={canMutateRuns ? "Delete" : "Sign in with Hugging Face (write access) to delete runs"}
+                title="Delete"
                 disabled={!canMutateRuns}
                 onclick={() => handleDelete(run)}
               >

@@ -1,7 +1,7 @@
 import shutil
 from pathlib import Path
 
-from trackio.utils import project_media_dir
+from trackio import utils
 
 
 def check_path(file_path: str | Path) -> None:
@@ -26,17 +26,18 @@ def check_ffmpeg_installed() -> None:
 
 
 def get_project_media_path(
-    project: str,
+    project_dir: str | Path,
     run: str | None = None,
     step: int | None = None,
     relative_path: str | Path | None = None,
 ) -> Path:
     """
-    Get the full path where uploaded files are stored for a Trackio project (and create the directory if it doesn't exist).
+    Get the full path where media files are stored for a Trackio project directory
+    (and create the directory if it doesn't exist).
     If a run is not provided, the files are stored in a project-level directory with the given relative path.
 
     Args:
-        project: The project name
+        project_dir: The project directory
         run: The run name
         step: The step number
         relative_path: The relative path within the directory (only used if run is not provided)
@@ -47,7 +48,7 @@ def get_project_media_path(
     if step is not None and run is None:
         raise ValueError("Uploading files at a specific step requires a run")
 
-    path = project_media_dir(project)
+    path = utils.media_dir(project_dir)
     if run:
         path /= run
         if step is not None:

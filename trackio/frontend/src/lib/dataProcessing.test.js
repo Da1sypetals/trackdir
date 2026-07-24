@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { computeMetricPlotData, processRunData } from "./dataProcessing.js";
+import {
+  computeMetricPlotData,
+  filterOutlierExtent,
+  processRunData,
+} from "./dataProcessing.js";
 
 describe("processRunData smoothing", () => {
   test("does not fabricate values for rows that did not log the metric", () => {
@@ -72,5 +76,55 @@ describe("processRunData smoothing", () => {
     );
 
     expect(result.xColumn).toBe("step");
+  });
+});
+
+describe("filterOutlierExtent", () => {
+  const values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 1000];
+
+  test("returns full extent when filtering is off", () => {
+    expect(filterOutlierExtent(values, { head: 0, tail: 0 })).toEqual([1, 1000]);
+    expect(filterOutlierExtent(values)).toEqual([1, 1000]);
+  });
+
+  test("filters the top head fraction, rounding the removed count up", () => {
+    // n=10, head=0.01 -> ceil(0.1)=1 point removed from the top
+    expect(filterOutlierExtent(values, { head: 0.01 })).toEqual([1, 9]);
+  });
+
+  test("filters the bottom tail fraction, rounding the removed count up", () => {
+    // n=10, tail=0.1 -> ceil(1)=1 point removed from the bottom
+    expect(filterOutlierExtent(values, { tail: 0.1 })).toEqual([2, 1000]);
+  });
+
+  test("filters head and tail independently", () => {
+    // n=10: ceil(10*0.1)=1 removed from each end
+    expect(filterOutlierExtent(values, { head: 0.1, tail: 0.1 })).toEqual([2, 9]);
+  });
+
+  test("keeps at least one point when the filter would remove everything", () => {
+    expect(filterOutlierExtent([5, 6], { head: 1, tail: 1 })).toEqual([5, 6]);
+  });
+
+  test("returns undefined for empty input", () => {
+    expect(filterOutlierExtent([], { head: 0.01 })).toBeUndefined();
+  });
+
+  test("computeMetricPlotData applies outlier filtering to yExtent only", () => {
+    const logs = [];
+    for (let i = 0; i < 100; i++) logs.push({ step: i, loss: i });
+    logs.push({ step: 100, loss: 100000 });
+
+    const { rows } = processRunData(logs, "run-1", 0, "step", false, false);
+    const unfiltered = computeMetricPlotData(rows, "step", "loss", null);
+    expect(unfiltered.yExtent).toEqual([0, 100000]);
+
+    // n=101 originals, head=0.01 -> ceil(1.01)=2 points removed from the top
+    const filtered = computeMetricPlotData(rows, "step", "loss", null, {
+      head: 0.01,
+    });
+    expect(filtered.yExtent).toEqual([0, 98]);
+    // data points themselves are kept (only the axis range changes)
+    expect(filtered.data.length).toBe(unfiltered.data.length);
   });
 });

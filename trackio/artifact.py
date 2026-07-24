@@ -3,11 +3,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-import httpx
-from huggingface_hub.utils import get_token
-
-from trackio import cas, utils
-from trackio.remote_client import _merge_client_headers, _resolve_src_url
+from trackio import cas
 from trackio.typehints import Manifest, Sha256Digest
 
 
@@ -29,43 +25,6 @@ def _materialize(blob: Path, dst: Path, size: int) -> None:
     except Exception:
         partial.unlink(missing_ok=True)
         raise
-
-
-def _fetch_blob_from_remote(
-    remote_source: dict,
-    project: str,
-    digest: Sha256Digest,
-    target_path: Path,
-) -> None:
-    space_id = remote_source.get("space_id")
-    src = space_id or remote_source.get("server_base_url")
-    if not src:
-        raise RuntimeError(
-            "Artifact has _remote_source set but neither space_id nor "
-            "server_base_url is populated."
-        )
-    base_url = _resolve_src_url(src).rstrip("/")
-    url = f"{base_url}/artifact_blob/{utils.canonical_project_name(project)}/{digest}"
-    headers = _merge_client_headers(
-        get_token() if space_id else None,
-        remote_source.get("write_token"),
-    )
-    with httpx.stream(
-        "GET",
-        url,
-        headers=headers,
-        timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
-    ) as response:
-        if response.status_code == 404:
-            raise FileNotFoundError(
-                f"Artifact blob {digest} not available on remote at {url}"
-            )
-        response.raise_for_status()
-        cas.stage_blob_from_chunks(
-            response.iter_bytes(),
-            claimed_digest=digest,
-            target_path=target_path,
-        )
 
 
 class Artifact:
@@ -108,8 +67,7 @@ class Artifact:
         self._size: int | None = None
         self._manifest: Manifest | None = None
         self._manifest_digest: Sha256Digest | None = None
-        self._project: str | None = None
-        self._remote_source: dict | None = None
+        self._project_dir: Path | None = None
 
     @property
     def name(self) -> str:
@@ -176,17 +134,17 @@ class Artifact:
 
     @property
     def qualified_name(self) -> str:
-        """`"<project>/<name>:v<N>"` for a logged or fetched artifact."""
-        if self._project is None or self._version is None:
+        """`"<project_dir_name>/<name>:v<N>"` for a logged or fetched artifact."""
+        if self._project_dir is None or self._version is None:
             raise RuntimeError(
                 "Artifact has no qualified name until it is logged or fetched."
             )
-        return f"{self._project}/{self._name}:v{self._version}"
+        return f"{self._project_dir.name}/{self._name}:v{self._version}"
 
     @property
-    def project(self) -> str | None:
-        """Project the artifact belongs to, or None until logged or fetched."""
-        return self._project
+    def project_dir(self) -> Path | None:
+        """Project directory the artifact belongs to, or None until logged or fetched."""
+        return self._project_dir
 
     def wait(self, timeout: int | None = None) -> "Artifact":
         """No-op: trackio logs artifacts synchronously, so the artifact is
@@ -248,7 +206,7 @@ class Artifact:
                 logical = cas.validate_logical_path(prefix + rel)
                 self._pending_files.append((entry, logical))
 
-    def _build_manifest(self, project: str) -> Manifest:
+    def _build_manifest(self, project_dir: str | Path) -> Manifest:
         if not self._pending_files:
             raise ValueError(
                 f"Artifact {self._name!r} has no files; call add_file/add_dir first."
@@ -259,14 +217,14 @@ class Artifact:
 
         entries: Manifest = []
         for src, logical in self._pending_files:
-            digest, size = cas.stage_blob_into_project(src, project)
+            digest, size = cas.stage_blob_into_project(src, project_dir)
             entries.append({"path": logical, "digest": digest, "size": size})
         return entries
 
     def _hydrate_from_db(
         self,
         *,
-        project: str,
+        project_dir: str | Path,
         version: int,
         aliases: list[str],
         manifest: Manifest,
@@ -279,7 +237,7 @@ class Artifact:
             self._description = description
         if metadata is not None:
             self._metadata = dict(metadata)
-        self._project = project
+        self._project_dir = Path(project_dir).expanduser().resolve()
         self._version = version
         self._aliases = tuple(aliases)
         self._manifest = [dict(e) for e in manifest]
@@ -290,18 +248,15 @@ class Artifact:
     def download(self, root: str | Path | None = None) -> str:
         """Materialize the artifact's files into a local directory.
 
-        Files are copied from Trackio's content-addressed cache (and fetched
-        from the remote when missing locally), so repeated calls are cheap and
-        idempotent.
+        Files are copied from Trackio's content-addressed cache, so repeated
+        calls are cheap and idempotent.
 
         Args:
             root (`str` or `Path`, *optional*):
                 Directory to write the files into. Defaults to
-                `./.trackio/artifact-downloads/<project>/<name>_v<version>/`,
-                keyed by project so same-named artifacts from different projects
-                never collide, and by the resolved version so a moving alias
-                like `latest` never leaves behind stale files from a previous
-                version.
+                `./.trackio/artifact-downloads/<project_dir_name>/<name>_v<version>/`,
+                keyed by the resolved version so a moving alias like `latest`
+                never leaves behind stale files from a previous version.
 
         Returns:
             The absolute path to the download directory, as a string.
@@ -310,16 +265,15 @@ class Artifact:
             raise RuntimeError(
                 "Cannot download an Artifact that has not been logged or fetched."
             )
-        if self._manifest is None or self._project is None or self._version is None:
+        if self._manifest is None or self._project_dir is None or self._version is None:
             raise RuntimeError("Artifact is missing manifest, project, or version.")
 
         if root is None:
-            project = utils.canonical_project_name(self._project)
             root_path = (
                 Path.cwd()
                 / ".trackio"
                 / "artifact-downloads"
-                / project
+                / self._project_dir.name
                 / f"{self._name}_v{self._version}"
             )
         else:
@@ -329,16 +283,10 @@ class Artifact:
         for entry in self._manifest:
             digest = cas.validate_digest(entry["digest"])
             logical = cas.validate_logical_path(entry["path"])
-            blob = cas.blob_path(self._project, digest)
+            blob = cas.blob_path(self._project_dir, digest)
             if not blob.is_file():
-                if self._remote_source is None:
-                    raise FileNotFoundError(
-                        f"Artifact blob {digest} not available locally or "
-                        "remotely. The producer machine may not have shipped "
-                        "this blob yet."
-                    )
-                _fetch_blob_from_remote(
-                    self._remote_source, self._project, digest, blob
+                raise FileNotFoundError(
+                    f"Artifact blob {digest} is missing from {self._project_dir}."
                 )
             _materialize(blob, root_path / logical, entry["size"])
 

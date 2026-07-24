@@ -4,17 +4,11 @@ import json
 import logging
 import os
 import shutil
-import warnings
 import webbrowser
 from pathlib import Path
 from typing import Any
 
-import huggingface_hub
-from gradio_client import handle_file
-from huggingface_hub import SpaceStorage
-from huggingface_hub.errors import LocalTokenNotFoundError
-
-from trackio import context_vars, deploy, utils
+from trackio import context_vars, utils
 from trackio.alerts import AlertLevel
 from trackio.api import Api
 from trackio.apple_gpu import apple_gpu_available
@@ -22,13 +16,12 @@ from trackio.apple_gpu import log_apple_gpu as _log_apple_gpu
 from trackio.artifact import Artifact
 from trackio.cpu import cpu_available
 from trackio.cpu import log_cpu as _log_cpu
-from trackio.deploy import freeze, sync
 from trackio.frontend_config import resolve_frontend_dir
 from trackio.gpu import gpu_available
 from trackio.gpu import log_gpu as _log_nvidia_gpu
 from trackio.histogram import Histogram
 from trackio.imports import import_csv, import_tf_events
-from trackio.launch import launch_trackio_dashboard
+from trackio.launch import start_server
 from trackio.markdown import Markdown
 from trackio.media import (
     TrackioAudio,
@@ -36,14 +29,12 @@ from trackio.media import (
     TrackioVideo,
     get_project_media_path,
 )
-from trackio.remote_client import RemoteClient
 from trackio.run import Run
-from trackio.server import TrackioDashboardApp, build_starlette_app_only
+from trackio.server import TrackioDashboardApp, create_app
 from trackio.sqlite_storage import SQLiteStorage
 from trackio.table import Table
 from trackio.trace import Trace
-from trackio.typehints import UploadEntry
-from trackio.utils import TRACKIO_DIR, TRACKIO_LOGO_DIR, _emit_nonfatal_warning
+from trackio.utils import TRACKIO_LOGO_DIR, _emit_nonfatal_warning
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -69,9 +60,6 @@ __all__ = [
     "alert",
     "AlertLevel",
     "show",
-    "sync",
-    "freeze",
-    "delete_project",
     "import_csv",
     "import_tf_events",
     "save",
@@ -85,18 +73,17 @@ __all__ = [
     "Markdown",
     "Api",
     "TRACKIO_LOGO_DIR",
+    "get_project_media_path",
 ]
 
 Audio = TrackioAudio
 Image = TrackioImage
 Video = TrackioVideo
 
-
 config = {}
 
 _atexit_registered = False
-_spaces_created_this_session: set[str] = set()
-_projects_notified_auto_log_hw: set[str] = set()
+_dirs_notified_auto_log_hw: set[str] = set()
 
 
 def _cleanup_current_run():
@@ -108,133 +95,13 @@ def _cleanup_current_run():
             pass
 
 
-def _safe_get_runs_for_init(
-    project: str,
-    space_id: str | None,
-    server_base_url: str | None,
-    write_token: str | None,
-    resume: str,
-    remote_client: RemoteClient | None = None,
-    check_existing_for_never: bool = False,
-) -> list[str]:
-    if space_id is not None or server_base_url is not None:
-        if resume == "never" and not check_existing_for_never:
-            return []
-        if remote_client is not None:
-            source = space_id or server_base_url
-            try:
-                runs = remote_client.predict(
-                    project=project, api_name="/get_runs_for_project"
-                )
-                return runs if isinstance(runs, list) else []
-            except Exception as e:
-                _emit_nonfatal_warning(
-                    f"trackio.init() could not inspect existing runs for project '{project}' on '{source}': {e}. Continuing without resume metadata."
-                )
-                return []
-    try:
-        return SQLiteStorage.get_runs(project)
-    except Exception as e:
-        _emit_nonfatal_warning(
-            f"trackio.init() could not inspect existing runs for project '{project}': {e}. Continuing without resume metadata."
-        )
-        return []
-
-
-def _safe_get_latest_run_for_init(
-    project: str,
-    name: str,
-    space_id: str | None = None,
-    server_base_url: str | None = None,
-    write_token: str | None = None,
-    remote_client: RemoteClient | None = None,
-) -> dict | None:
-    if (
-        space_id is not None or server_base_url is not None
-    ) and remote_client is not None:
-        source = space_id or server_base_url
-        try:
-            runs = remote_client.predict(
-                project=project, api_name="/get_runs_for_project"
-            )
-            if not isinstance(runs, list):
-                return None
-            matches = [r for r in runs if isinstance(r, dict) and r.get("name") == name]
-            if not matches:
-                return None
-            matches.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-            return matches[0]
-        except Exception as e:
-            _emit_nonfatal_warning(
-                f"trackio.init() could not inspect existing runs for project '{project}' on '{source}': {e}. Continuing without resume metadata."
-            )
-            return None
-    try:
-        return SQLiteStorage.get_latest_run_record_by_name(project, name)
-    except Exception as e:
-        _emit_nonfatal_warning(
-            f"trackio.init() could not inspect existing runs for project '{project}': {e}. Continuing without resume metadata."
-        )
-        return None
-
-
-def _safe_get_last_step_for_init(
-    project: str,
-    run_name: str,
-    space_id: str | None,
-    server_base_url: str | None,
-    write_token: str | None,
-    resumed: bool,
-    run_id: str | None = None,
-    remote_client: RemoteClient | None = None,
-) -> int | None:
-    if not resumed:
-        return None
-    if (
-        space_id is not None or server_base_url is not None
-    ) and remote_client is not None:
-        source = space_id or server_base_url
-        try:
-            summary_kwargs: dict[str, Any] = {
-                "project": project,
-                "api_name": "/get_run_summary",
-            }
-            if run_id is not None:
-                summary_kwargs["run_id"] = run_id
-            else:
-                summary_kwargs["run"] = run_name
-            summary = remote_client.predict(**summary_kwargs)
-            if isinstance(summary, dict):
-                last_step = summary.get("last_step")
-                return last_step if isinstance(last_step, int) else None
-            return None
-        except Exception as e:
-            _emit_nonfatal_warning(
-                f"trackio.init() could not recover the previous step for run '{run_name}' on '{source}': {e}. Continuing from step 0."
-            )
-            return None
-    try:
-        return SQLiteStorage.get_max_step_for_run(project, run_name, run_id=run_id)
-    except Exception as e:
-        _emit_nonfatal_warning(
-            f"trackio.init() could not recover the previous step for run '{run_name}': {e}. Continuing from step 0."
-        )
-        return None
-
-
 def init(
-    project: str,
+    dir: str | Path = ".",
     name: str | None = None,
     group: str | None = None,
-    space_id: str | None = None,
-    server_url: str | None = None,
-    space_storage: SpaceStorage | None = None,
-    dataset_id: str | None = None,
-    bucket_id: str | None = None,
     config: dict | None = None,
     resume: str = "never",
     settings: Any = None,
-    private: bool | None = None,
     embed: bool = True,
     auto_log_gpu: bool | None = None,
     gpu_log_interval: float = 10.0,
@@ -244,49 +111,22 @@ def init(
     webhook_min_level: AlertLevel | str | None = None,
 ) -> Run:
     """
-    Creates a new Trackio project and returns a [`Run`] object.
+    Creates (or opens) a Trackio project directory and returns a [`Run`] object.
+
+    A Trackio project is a directory on disk. Metrics are stored in
+    `<dir>/trackio.db`, media files under `<dir>/media/`, and artifacts under
+    `<dir>/artifacts/`. View the dashboard for a project with
+    `python -m trackio.show <dir>`.
 
     Args:
-        project (`str`):
-            The name of the project (can be an existing project to continue tracking or
-            a new project to start tracking from scratch).
+        dir (`str` or `Path`, *optional*, defaults to `"."`):
+            The project directory. It is created if it does not exist.
         name (`str`, *optional*):
             The name of the run (if not provided, a default name will be generated).
         group (`str`, *optional*):
             The name of the group which this run belongs to in order to help organize
             related runs together. You can toggle the entire group's visibility in the
             dashboard.
-        space_id (`str`, *optional*):
-            If provided, the project will be logged to a Hugging Face Space instead of
-            a local directory. Should be a complete Space name like
-            `"username/reponame"` or `"orgname/reponame"`, or just `"reponame"` in which
-            case the Space will be created in the currently-logged-in Hugging Face
-            user's namespace. If the Space does not exist, it will be created. If the
-            Space already exists, the project will be logged to it. Can also be set
-            via the `TRACKIO_SPACE_ID` environment variable. You cannot log to a
-            Space that has been **frozen** (converted to the static SDK); use
-            ``trackio.sync(..., sdk="static")`` only after you are done logging.
-            Takes precedence over `server_url` and `TRACKIO_SERVER_URL` when more than
-            one is set.
-        server_url (`str`, *optional*):
-            Base URL of a self-hosted Trackio server (``http://`` or ``https://``), or the
-            write-access URL from ``trackio.show()`` which may include a ``write_token`` query
-            parameter. The client sends that token on each request (``X-Trackio-Write-Token``);
-            you can also set ``TRACKIO_WRITE_TOKEN`` instead of embedding the token in the URL.
-            When set, metrics are sent to that server over HTTP instead of creating or syncing
-            to a Hugging Face Space. Can also be set via the ``TRACKIO_SERVER_URL`` environment
-            variable. Ignored when ``space_id`` or ``TRACKIO_SPACE_ID`` is set.
-        space_storage ([`~huggingface_hub.SpaceStorage`], *optional*):
-            Choice of persistent storage tier.
-        dataset_id (`str`, *optional*):
-            Deprecated. Use `bucket_id` instead.
-        bucket_id (`str`, *optional*):
-            The ID of the Hugging Face Bucket to use for metric persistence. By default,
-            when a `space_id` is provided and `bucket_id` is not explicitly set, a
-            bucket is auto-generated from the space_id. Buckets provide
-            S3-like storage without git overhead - the SQLite database is stored directly
-            via `hf-mount` in the Space. Specify a Bucket with name like
-            `"username/bucketname"` or just `"bucketname"`.
         config (`dict`, *optional*):
             A dictionary of configuration options. Provided for compatibility with
             `wandb.init()`.
@@ -297,18 +137,11 @@ def init(
               doesn't exist
             - `"allow"`: Resume the run if it exists, otherwise create a new run
             - `"never"`: Never resume a run, always create a new one
-        private (`bool`, *optional*):
-            Whether to make the Space private. If None (default), the repo will be
-            public unless the organization's default is private. This value is ignored
-            if the repo already exists.
         settings (`Any`, *optional*):
             Not used. Provided for compatibility with `wandb.init()`.
         embed (`bool`, *optional*, defaults to `True`):
-            If running inside a Jupyter/Colab notebook, whether the dashboard should
-            automatically be embedded in the cell when trackio.init() is called. For
-            local runs, this launches a local Trackio dashboard and embeds it. For Space runs,
-            this embeds the Space URL. In Colab, the local dashboard will be accessible
-            via a public share URL when `share=True`.
+            If running inside a Jupyter notebook, whether the dashboard should
+            automatically be embedded in the cell when trackio.init() is called.
         auto_log_gpu (`bool` or `None`, *optional*, defaults to `None`):
             Controls automatic GPU metrics logging. If `None` (default), GPU logging
             is automatically enabled when `nvidia-ml-py` is installed and an NVIDIA
@@ -339,12 +172,14 @@ def init(
     Returns:
         `Run`: A [`Run`] object that can be used to log metrics and finish the run.
     """
-    SQLiteStorage.validate_project_name(project)
-
     if settings is not None:
         _emit_nonfatal_warning(
-            "* Warning: settings is not used. Provided for compatibility with wandb.init(). Please create an issue at: https://github.com/gradio-app/trackio/issues if you need a specific feature implemented."
+            "* Warning: settings is not used. Provided for compatibility with wandb.init()."
         )
+
+    project_dir = Path(dir).expanduser().resolve()
+    project_dir.mkdir(parents=True, exist_ok=True)
+    db_path = utils.get_db_path(project_dir)
 
     previous_run = context_vars.current_run.get()
     if previous_run is not None:
@@ -356,198 +191,36 @@ def init(
             )
         context_vars.current_run.set(None)
 
-    bucket_id_was_explicit = bucket_id is not None
-    space_id, server_url = utils.resolve_space_id_and_server_url(space_id, server_url)
-    if bucket_id is None and utils.on_spaces():
-        bucket_id = os.environ.get("TRACKIO_BUCKET_ID")
-    if server_url is not None and not server_url.startswith(("http://", "https://")):
-        raise ValueError(
-            f"`server_url` must be a full URL starting with http:// or https://, got: {server_url!r}"
-        )
-    server_base_url: str | None = None
-    write_token_resolved: str | None = None
-    if server_url is not None:
-        server_base_url, tok = utils.parse_trackio_server_url(server_url)
-        write_token_resolved = tok or os.environ.get("TRACKIO_WRITE_TOKEN")
-        if not write_token_resolved:
-            raise ValueError(
-                "Self-hosted logging requires a write token: add write_token to the server URL, "
-                "or set the TRACKIO_WRITE_TOKEN environment variable."
-            )
-    if server_url is not None and (dataset_id is not None or bucket_id is not None):
-        raise ValueError(
-            "`dataset_id` and `bucket_id` are Hugging Face Spaces concepts and are not "
-            "compatible with `server_url`. Configure storage on the self-hosted server."
-        )
-    if space_id is None and dataset_id is not None:
-        raise ValueError("Must provide a `space_id` when `dataset_id` is provided.")
-    if dataset_id is not None and bucket_id is not None:
-        raise ValueError("Cannot provide both `dataset_id` and `bucket_id`.")
+    if context_vars.current_project_dir.get() != str(project_dir):
+        print(f"* Trackio project directory: {project_dir}")
+        if not utils.is_in_notebook():
+            utils.print_dashboard_instructions(project_dir)
+    context_vars.current_project_dir.set(str(project_dir))
+
     try:
-        space_id, dataset_id, bucket_id = utils.preprocess_space_and_dataset_ids(
-            space_id, dataset_id, bucket_id
-        )
-        if (
-            space_id is not None
-            and dataset_id is None
-            and bucket_id is not None
-            and not bucket_id_was_explicit
-            and not utils.on_spaces()
-        ):
-            bucket_id = deploy.resolve_auto_bucket_id(space_id, bucket_id)
-    except LocalTokenNotFoundError as e:
-        raise LocalTokenNotFoundError(
-            f"You must be logged in to Hugging Face locally when `space_id` is provided to deploy to a Space. {e}"
-        ) from e
-
-    if space_id is None and bucket_id is not None:
+        existing_run_records = SQLiteStorage.get_run_records(db_path)
+    except Exception as e:
         _emit_nonfatal_warning(
-            "trackio.init() has `bucket_id` set but `space_id` is None: metrics will be logged "
-            "locally only. Pass `space_id` to create or use a Hugging Face Space, which will be "
-            "attached to the Hugging Face Bucket.",
-            UserWarning,
-            stacklevel=2,
+            f"trackio.init() could not inspect existing runs in '{project_dir}': {e}. Continuing without resume metadata."
         )
+        existing_run_records = []
+    existing_runs = [r["name"] for r in existing_run_records]
 
-    if space_id is not None:
-        deploy.raise_if_space_is_frozen_for_logging(space_id)
-
-    remote_source = space_id or server_base_url
-
-    if remote_source is not None:
-        url = remote_source
-        context_vars.current_server.set(url)
-        if space_id is not None:
-            context_vars.current_space_id.set(space_id)
-            context_vars.current_server_write_token.set(None)
-        else:
-            context_vars.current_space_id.set(None)
-            context_vars.current_server_write_token.set(write_token_resolved)
-    else:
-        url = None
-        context_vars.current_server.set(None)
-        context_vars.current_space_id.set(None)
-        context_vars.current_server_write_token.set(None)
-
-    _should_embed_local = False
-
-    newly_created_space = False
-    if space_id is not None and space_id in _spaces_created_this_session:
-        if deploy.space_is_running(space_id):
-            _spaces_created_this_session.discard(space_id)
-        else:
-            newly_created_space = True
-
-    if (
-        context_vars.current_project.get() is None
-        or context_vars.current_project.get() != project
-    ):
-        print(f"* Trackio project initialized: {project}")
-
-        if bucket_id is not None:
-            if utils.on_spaces():
-                os.environ["TRACKIO_BUCKET_ID"] = bucket_id
-            bucket_url = f"https://huggingface.co/buckets/{bucket_id}"
-            print(
-                f"* Trackio metrics will be synced to Hugging Face Bucket: {bucket_url}"
-            )
-        elif dataset_id is not None:
-            if utils.on_spaces():
-                os.environ["TRACKIO_DATASET_ID"] = dataset_id
-            print(
-                f"* Trackio metrics will be synced to Hugging Face Dataset: {dataset_id}"
-            )
-        if remote_source is None:
-            print(f"* Trackio metrics logged to: {TRACKIO_DIR}")
-            _should_embed_local = embed and utils.is_in_notebook()
-            if not _should_embed_local:
-                utils.print_dashboard_instructions(project)
-        elif server_base_url is not None:
-            print(
-                f"* Trackio metrics will be sent to self-hosted server: {server_base_url}"
-            )
-            if utils.is_in_notebook() and embed:
-                utils.embed_url_in_notebook(server_base_url)
-        else:
-            try:
-                if deploy.create_space_if_not_exists(
-                    space_id,
-                    space_storage,
-                    dataset_id,
-                    bucket_id,
-                    private,
-                ):
-                    _spaces_created_this_session.add(space_id)
-                    newly_created_space = True
-                user_name, space_name = space_id.split("/")
-                space_url = deploy.SPACE_HOST_URL.format(
-                    user_name=user_name, space_name=space_name
-                )
-                if utils.is_in_notebook() and embed:
-                    utils.embed_url_in_notebook(space_url)
-            except Exception as e:
-                _emit_nonfatal_warning(
-                    f"trackio.init() could not prepare Space '{space_id}': {e}. Logging will continue in local fallback mode until the Space is reachable."
-                )
-    context_vars.current_project.set(project)
-
-    remote_client = None
-    if space_id is not None and not newly_created_space:
+    existing_run = None
+    if name is not None:
         try:
-            remote_client = RemoteClient(
-                space_id,
-                hf_token=huggingface_hub.utils.get_token(),
-                verbose=False,
-            )
+            existing_run = SQLiteStorage.get_latest_run_record_by_name(db_path, name)
         except Exception as e:
             _emit_nonfatal_warning(
-                f"trackio.init() could not create a remote client for Space '{space_id}': {e}. Continuing with local fallback metadata lookups."
-            )
-    elif server_base_url is not None:
-        try:
-            remote_client = RemoteClient(
-                server_base_url,
-                hf_token=None,
-                write_token=write_token_resolved,
-                verbose=False,
-            )
-        except Exception as e:
-            _emit_nonfatal_warning(
-                f"trackio.init() could not create a remote client for '{server_base_url}': {e}. Continuing with local fallback metadata lookups."
+                f"trackio.init() could not inspect existing runs in '{project_dir}': {e}. Continuing without resume metadata."
             )
 
-    existing_run_records = _safe_get_runs_for_init(
-        project,
-        space_id,
-        server_base_url,
-        write_token_resolved,
-        resume,
-        remote_client=remote_client,
-        check_existing_for_never=name is not None,
-    )
-    existing_runs = [
-        r["name"] if isinstance(r, dict) else r for r in existing_run_records
-    ]
-
-    existing_run = (
-        _safe_get_latest_run_for_init(
-            project,
-            name,
-            space_id=space_id,
-            server_base_url=server_base_url,
-            write_token=write_token_resolved,
-            remote_client=remote_client,
-        )
-        if name is not None
-        else None
-    )
     resolved_run_id = None
-
     if resume == "must":
         if name is None:
             raise ValueError("Must provide a run name when resume='must'")
         if existing_run is None:
-            raise ValueError(f"Run '{name}' does not exist in project '{project}'")
+            raise ValueError(f"Run '{name}' does not exist in '{project_dir}'")
         resumed = True
         resolved_run_id = existing_run["id"]
     elif resume == "allow":
@@ -559,20 +232,16 @@ def init(
     else:
         raise ValueError("resume must be one of: 'must', 'allow', or 'never'")
 
-    initial_last_step = (
-        _safe_get_last_step_for_init(
-            project,
-            name,
-            space_id,
-            server_base_url,
-            write_token_resolved,
-            resumed,
-            run_id=resolved_run_id,
-            remote_client=remote_client,
-        )
-        if name is not None
-        else None
-    )
+    initial_last_step = None
+    if resumed and name is not None:
+        try:
+            initial_last_step = SQLiteStorage.get_max_step_for_run(
+                db_path, name, run_id=resolved_run_id
+            )
+        except Exception as e:
+            _emit_nonfatal_warning(
+                f"trackio.init() could not recover the previous step for run '{name}': {e}. Continuing from step 0."
+            )
 
     auto_log_cpu_detected = False
     if auto_log_cpu is None:
@@ -588,7 +257,8 @@ def init(
         auto_log_gpu_detected = nvidia_available or apple_available
         auto_log_gpu = auto_log_gpu_detected
 
-    if project not in _projects_notified_auto_log_hw:
+    dir_key = str(project_dir)
+    if dir_key not in _dirs_notified_auto_log_hw:
         if nvidia_available:
             print("* NVIDIA GPU detected, enabling automatic GPU metrics logging")
         elif apple_available:
@@ -598,20 +268,14 @@ def init(
         if auto_log_cpu_detected:
             print("* psutil detected, enabling automatic CPU/system metrics logging")
         if auto_log_gpu_detected or auto_log_cpu_detected:
-            _projects_notified_auto_log_hw.add(project)
+            _dirs_notified_auto_log_hw.add(dir_key)
 
     run = Run(
-        url=url,
-        project=project,
-        client=None,
+        project_dir=project_dir,
         name=name,
         run_id=resolved_run_id,
         group=group,
         config=config,
-        space_id=space_id,
-        bucket_id=bucket_id,
-        server_base_url=server_base_url,
-        write_token=write_token_resolved,
         existing_runs=existing_runs,
         initial_last_step=initial_last_step,
         auto_log_gpu=auto_log_gpu,
@@ -621,21 +285,6 @@ def init(
         webhook_url=webhook_url,
         webhook_min_level=webhook_min_level,
     )
-
-    if space_id is not None:
-        try:
-            SQLiteStorage.set_project_metadata(project, "space_id", space_id)
-        except Exception as e:
-            _emit_nonfatal_warning(
-                f"trackio.init() could not persist Space metadata for project '{project}': {e}. Logging will continue."
-            )
-        try:
-            if SQLiteStorage.has_pending_data(project):
-                run._has_local_buffer = True
-        except Exception as e:
-            _emit_nonfatal_warning(
-                f"trackio.init() could not inspect pending buffered data for project '{project}': {e}. Logging will continue."
-            )
 
     global _atexit_registered
     if not _atexit_registered:
@@ -650,17 +299,9 @@ def init(
     context_vars.current_run.set(run)
     globals()["config"] = run.config
 
-    if space_id is not None or server_url is None:
+    if embed and utils.is_in_notebook():
         try:
-            from trackio import logbook as _logbook  # noqa: PLC0415
-
-            _logbook.auto_note_dashboard(project, space_id=space_id)
-        except Exception:
-            pass
-
-    if _should_embed_local:
-        try:
-            show(project=project, open_browser=False, block_thread=False)
+            show(dir=project_dir, open_browser=False, block_thread=False)
         except Exception as e:
             _emit_nonfatal_warning(
                 f"trackio.init() could not auto-launch the dashboard: {e}. Logging will continue."
@@ -718,8 +359,8 @@ def log_artifact(
             `add_file` or `add_dir`), or a path to a file or directory to
             log as a new artifact.
         name (`str`, *optional*):
-            Artifact name when logging a path. Defaults to
-            `run-<run_id>-<basename>`. Must not be passed with an `Artifact`.
+            Artifact name when logging a path. Defaults to the basename of
+            the path. Must not be passed with an `Artifact`.
         type (`str`, *optional*):
             Artifact type when logging a path (e.g. `"model"`, `"dataset"`).
             Defaults to `"unspecified"`. Must not be passed with an
@@ -732,7 +373,7 @@ def log_artifact(
 
     Returns:
         The logged `Artifact` instance, hydrated with `version`, `aliases`,
-        `size`, `manifest`, and `project` set.
+        `size`, and `manifest` set.
     """
     run = context_vars.current_run.get()
     if run is None:
@@ -779,16 +420,6 @@ def log_gpu(run: Run | None = None, device: int | None = None) -> dict:
 
     Returns:
         dict: The GPU metrics that were logged.
-
-    Example:
-        ```python
-        import trackio
-
-        run = trackio.init(project="my-project")
-        trackio.log({"loss": 0.5})
-        trackio.log_gpu()
-        trackio.log_gpu(device=0)
-        ```
     """
     if run is None:
         run = context_vars.current_run.get()
@@ -817,15 +448,6 @@ def log_cpu(run: Run | None = None) -> dict:
 
     Returns:
         dict: The CPU and system metrics that were logged.
-
-    Example:
-        ```python
-        import trackio
-
-        run = trackio.init(project="my-project")
-        trackio.log({"loss": 0.5})
-        trackio.log_cpu()
-        ```
     """
     if run is None:
         run = context_vars.current_run.get()
@@ -881,78 +503,22 @@ def alert(
     run.alert(title=title, text=text, level=level, webhook_url=webhook_url)
 
 
-def delete_project(project: str, force: bool = False) -> bool:
-    """
-    Deletes a project by removing its local SQLite database.
-
-    Args:
-        project (`str`):
-            The name of the project to delete.
-        force (`bool`, *optional*, defaults to `False`):
-            If `True`, deletes the project without prompting for confirmation.
-            If `False`, prompts the user to confirm before deleting.
-
-    Returns:
-        `bool`: `True` if the project was deleted, `False` otherwise.
-    """
-    db_path = SQLiteStorage.get_project_db_path(project)
-
-    if not db_path.exists():
-        print(f"* Project '{project}' does not exist.")
-        return False
-
-    if not force:
-        response = input(
-            f"Are you sure you want to delete project '{project}'? "
-            f"This will permanently delete all runs and metrics. (y/N): "
-        )
-        if response.lower() not in ["y", "yes"]:
-            print("* Deletion cancelled.")
-            return False
-
-    try:
-        db_path.unlink()
-
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(str(db_path) + suffix)
-            if sidecar.exists():
-                sidecar.unlink()
-
-        for parquet_path in SQLiteStorage._project_parquet_paths(db_path):
-            if parquet_path.exists():
-                parquet_path.unlink()
-
-        for asset_dir in (
-            utils.project_artifacts_dir(project),
-            utils.project_media_dir(project),
-        ):
-            if asset_dir.exists():
-                shutil.rmtree(asset_dir, ignore_errors=True)
-
-        print(f"* Project '{project}' has been deleted.")
-        return True
-    except Exception as e:
-        print(f"* Error deleting project '{project}': {e}")
-        return False
-
-
 def save(
     glob_str: str | Path,
-    project: str | None = None,
+    dir: str | Path | None = None,
 ) -> str:
     """
-    Saves files to a project (not linked to a specific run). If Trackio is running
-    locally, the file(s) will be copied to the project's files directory. If Trackio is
-    running in a Space, the file(s) will be uploaded to the Space's files directory.
+    Saves files to a project directory (not linked to a specific run). The
+    file(s) will be copied into the project's `media/files/` directory.
 
     Args:
         glob_str (`str` or `Path`):
             The file path or glob pattern to save. Can be a single file or a pattern
             matching multiple files (e.g., `"*.py"`, `"models/**/*.pth"`).
-        project (`str`, *optional*):
-            The name of the project to save files to. If not provided, uses the current
-            project from `trackio.init()`. If no project is initialized, raises an
-            error.
+        dir (`str` or `Path`, *optional*):
+            The project directory to save files to. If not provided, uses the current
+            project directory from `trackio.init()`. If no project is initialized,
+            raises an error.
 
     Returns:
         `str`: The path where the file(s) were saved (project's files directory).
@@ -961,19 +527,20 @@ def save(
         ```python
         import trackio
 
-        trackio.init(project="my-project")
+        trackio.init(dir="runs/my-project")
         trackio.save("config.yaml")
         trackio.save("models/*.pth")
         ```
     """
-    if project is None:
-        project = context_vars.current_project.get()
-        if project is None:
+    if dir is None:
+        dir = context_vars.current_project_dir.get()
+        if dir is None:
             raise RuntimeError(
-                "No project specified. Either call trackio.init() first or provide a "
-                "project parameter to trackio.save()."
+                "No project directory specified. Either call trackio.init() first or provide a "
+                "dir parameter to trackio.save()."
             )
 
+    project_dir = Path(dir).expanduser().resolve()
     glob_str = Path(glob_str)
     base_path = Path.cwd().resolve()
 
@@ -993,130 +560,42 @@ def save(
     if not matched_files:
         raise ValueError(f"No files found matching pattern: {glob_str}")
 
-    current_run = context_vars.current_run.get()
-    is_local = (
-        current_run._is_local
-        if current_run is not None
-        else (
-            context_vars.current_space_id.get() is None
-            and context_vars.current_server.get() is None
-        )
-    )
+    files_root = utils.files_dir(project_dir)
+    for file_path in matched_files:
+        try:
+            relative_to_base = file_path.relative_to(base_path)
+        except ValueError:
+            relative_to_base = Path(file_path.name)
 
-    if is_local:
-        for file_path in matched_files:
-            try:
-                relative_to_base = file_path.relative_to(base_path)
-            except ValueError:
-                relative_to_base = Path(file_path.name)
+        target_path = files_root / relative_to_base
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(str(file_path), str(target_path))
 
-            if current_run is not None:
-                current_run._queue_upload(
-                    file_path,
-                    step=None,
-                    relative_path=str(relative_to_base.parent),
-                    use_run_name=False,
-                )
-            else:
-                media_path = get_project_media_path(
-                    project=project,
-                    run=None,
-                    step=None,
-                    relative_path=str(relative_to_base),
-                )
-                shutil.copy(str(file_path), str(media_path))
-    else:
-        url = context_vars.current_server.get()
-
-        upload_entries = []
-        for file_path in matched_files:
-            try:
-                relative_to_base = file_path.relative_to(base_path)
-            except ValueError:
-                relative_to_base = Path(file_path.name)
-
-            if current_run is not None:
-                current_run._queue_upload(
-                    file_path,
-                    step=None,
-                    relative_path=str(relative_to_base.parent),
-                    use_run_name=False,
-                )
-            else:
-                upload_entry: UploadEntry = {
-                    "project": project,
-                    "run": None,
-                    "step": None,
-                    "relative_path": str(relative_to_base),
-                    "uploaded_file": handle_file(file_path),
-                }
-                upload_entries.append(upload_entry)
-
-        if upload_entries:
-            if url is None:
-                raise RuntimeError(
-                    "No server available. Call trackio.init() before trackio.save() to start the server."
-                )
-
-            try:
-                wt = context_vars.current_server_write_token.get()
-                if wt is not None:
-                    client = RemoteClient(
-                        url,
-                        hf_token=None,
-                        write_token=wt,
-                        httpx_kwargs={"timeout": 90},
-                    )
-                else:
-                    client = RemoteClient(
-                        url,
-                        hf_token=huggingface_hub.utils.get_token(),
-                        httpx_kwargs={"timeout": 90},
-                    )
-                client.predict(
-                    api_name="/bulk_upload_media",
-                    uploads=upload_entries,
-                    hf_token=huggingface_hub.utils.get_token() if wt is None else None,
-                )
-            except Exception as e:
-                _emit_nonfatal_warning(
-                    f"Failed to upload files: {e}. "
-                    "Files may not be available in the dashboard."
-                )
-
-    return str(utils.project_media_dir(project) / "files")
+    return str(files_root)
 
 
 def show(
-    project: str | None = None,
+    dir: str | Path = ".",
     *,
-    theme: Any = None,
     mcp_server: bool | None = None,
-    footer: bool = True,
     color_palette: list[str] | None = None,
     open_browser: bool = True,
     block_thread: bool | None = None,
     host: str | None = None,
-    share: bool | None = None,
     server_port: int | None = None,
     frontend_dir: str | Path | None = None,
 ):
     """
-    Launches the Trackio dashboard.
+    Launches the Trackio dashboard for a project directory.
 
     Args:
-        project (`str`, *optional*):
-            The name of the project whose runs to show. If not provided, all projects
-            will be shown and the user can select one.
-        theme (`Any`, *optional*):
-            Ignored. Kept for backward compatibility; Trackio no longer uses Gradio themes.
+        dir (`str` or `Path`, *optional*, defaults to `"."`):
+            The project directory whose runs to show. Must contain a
+            `trackio.db` database (created by `trackio.init(dir=...)`); an
+            empty one is created if missing.
         mcp_server (`bool`, *optional*):
             If `True`, the dashboard exposes an MCP server at `/mcp` when the optional
-            `trackio[mcp]` dependency is installed. If `None` (default), the
-            `GRADIO_MCP_SERVER` environment variable is used (e.g. on Spaces).
-        footer (`bool`, *optional*, defaults to `True`):
-            Whether to include `footer=false` in the write-token URL when `False`.
-            This can also be controlled via the `footer` query parameter in the URL.
+            `trackio[mcp]` dependency is installed.
         color_palette (`list[str]`, *optional*):
             A list of hex color codes to use for plot lines. If not provided, the
             `TRACKIO_COLOR_PALETTE` environment variable will be used (comma-separated
@@ -1132,31 +611,17 @@ def show(
         host (`str`, *optional*):
             The host to bind the server to. If not provided, defaults to `'127.0.0.1'`
             (localhost only). Set to `'0.0.0.0'` to allow remote access.
-        share (`bool`, *optional*):
-            If `True`, creates a temporary public URL (Gradio-compatible tunnel). On Colab
-            or hosted notebooks, defaults to `True` unless overridden.
         server_port (`int`, *optional*):
             Port to bind. If not set, scans from `GRADIO_SERVER_PORT` (default 7860).
         frontend_dir (`str | Path`, *optional*):
             Directory containing a custom static frontend. Must contain `index.html`.
             If not provided, Trackio checks `TRACKIO_FRONTEND_DIR`, then the persistent
-            Trackio config, then the bundled frontend. If an explicit `frontend_dir`
-            points to a missing or empty directory, Trackio copies in the starter
-            template and serves that directory.
+            Trackio config, then the bundled frontend.
 
-        Returns:
-            `app`: The dashboard handle (`.close()` stops the server).
-            `url`: The local URL of the dashboard.
-            `share_url`: The public share URL, if any.
-            `full_url`: The full URL including the write token (share URL when sharing, else local).
+    Returns:
+        `app`: The dashboard handle (`.close()` stops the server).
+        `url`: The local URL of the dashboard.
     """
-    if theme is not None and theme != "default":
-        warnings.warn(
-            "The theme argument is ignored; Trackio no longer depends on Gradio themes.",
-            UserWarning,
-            stacklevel=2,
-        )
-
     if color_palette is not None:
         os.environ["TRACKIO_COLOR_PALETTE"] = ",".join(color_palette)
 
@@ -1166,43 +631,29 @@ def show(
         else os.environ.get("GRADIO_MCP_SERVER", "False") == "True"
     )
 
+    project_dir = Path(dir).expanduser().resolve()
     resolved_frontend = resolve_frontend_dir(frontend_dir, announce=True)
-    starlette_app, wt = build_starlette_app_only(
+    starlette_app = create_app(
+        project_dir=project_dir,
         mcp_server=_mcp_server,
         frontend_dir=str(resolved_frontend.path),
     )
-    local_url, share_url, _local_api_url, uv_server = launch_trackio_dashboard(
+    local_url, uv_server = start_server(
         starlette_app,
         server_name=host,
         server_port=server_port,
-        share=share,
-        mcp_server=_mcp_server,
-        quiet=True,
     )
-    server = TrackioDashboardApp(starlette_app, uv_server, wt)
-
-    base_root = (share_url or local_url).rstrip("/")
-    base_url = base_root + "/"
-    dashboard_url = base_url
-    if project:
-        dashboard_url += f"?project={project}"
-    full_url = utils.get_full_url(
-        base_root,
-        project=project,
-        write_token=wt,
-        footer=footer,
-    )
+    server = TrackioDashboardApp(starlette_app, uv_server)
 
     if not utils.is_in_notebook():
-        print(f"\033[1m\033[38;5;208m* Trackio UI launched at: {dashboard_url}\033[0m")
-        utils.print_write_token_instructions(full_url)
+        print(f"\033[1m\033[38;5;208m* Trackio UI launched at: {local_url}\033[0m")
         if open_browser:
-            webbrowser.open(full_url)
+            webbrowser.open(local_url)
         block_thread = block_thread if block_thread is not None else True
     else:
-        utils.embed_url_in_notebook(full_url)
+        utils.embed_url_in_notebook(local_url)
         block_thread = block_thread if block_thread is not None else False
 
     if block_thread:
         utils.block_main_thread_until_keyboard_interrupt()
-    return _TupleNoPrint((server, local_url, share_url, full_url))
+    return _TupleNoPrint((server, local_url))

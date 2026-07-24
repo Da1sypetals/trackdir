@@ -2,9 +2,8 @@
   import LoadingTrackio from "../components/LoadingTrackio.svelte";
   import { getFileUrl, getProjectFiles } from "../lib/api.js";
 
-  let { project = null } = $props();
-
   let files = $state([]);
+
   let loading = $state(false);
   let expandedFile = $state(null);
   let previewContent = $state(null);
@@ -54,13 +53,9 @@
   }
 
   async function loadFiles() {
-    if (!project) {
-      files = [];
-      return;
-    }
     loading = true;
     try {
-      files = await getProjectFiles(project);
+      files = await getProjectFiles();
     } catch {
       files = [];
     } finally {
@@ -69,7 +64,6 @@
   }
 
   $effect(() => {
-    project;
     loadFiles();
   });
 </script>
@@ -84,7 +78,7 @@
         Files are stored at the <strong>project</strong> level (not tied to a single run). After
         <code>trackio.init()</code>, copy artifacts into the project with <code>trackio.save()</code>:
       </p>
-      <pre><code>{'import trackio\n\ntrackio.init(project="my-project")\ntrackio.save("config.yaml")\ntrackio.save("checkpoints/*.pt")'}</code></pre>
+      <pre><code>{'import trackio\n\ntrackio.init(dir="path/to/project")\ntrackio.save("config.yaml")\ntrackio.save("checkpoints/*.pt")'}</code></pre>
       <p>Paths can be a single file or a glob. Saved files will list here for download.</p>
     </div>
   {:else}

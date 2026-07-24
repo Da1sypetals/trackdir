@@ -4,22 +4,16 @@ import inspect
 import json
 import logging
 import math
-import secrets
-import tempfile
-import threading
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, get_args, get_origin
 from urllib.parse import unquote
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from trackio import utils
 from trackio.exceptions import TrackioAPIError
-from trackio.remote_client import HTTP_API_VERSION
 
 logger = logging.getLogger("trackio.asgi_app")
 
@@ -62,38 +56,6 @@ def _json_safe(data: Any) -> Any:
         except Exception:
             pass
     return str(data)
-
-
-def register_uploaded_temp_file(request: Request, file_path: str | Path) -> None:
-    resolved_path = Path(file_path).resolve(strict=False)
-    with request.app.state.uploaded_temp_files_lock:
-        request.app.state.uploaded_temp_files.add(resolved_path)
-
-
-def consume_uploaded_temp_file(request: Request, file_data: Any) -> Path:
-    file_path = file_data.get("path") if isinstance(file_data, dict) else None
-    if not isinstance(file_path, str) or not file_path:
-        raise TrackioAPIError("Expected uploaded file metadata with a valid path.")
-
-    resolved_path = Path(file_path).resolve(strict=False)
-    with request.app.state.uploaded_temp_files_lock:
-        if resolved_path not in request.app.state.uploaded_temp_files:
-            raise TrackioAPIError(
-                "Uploaded file was not created by this Trackio server."
-            )
-        request.app.state.uploaded_temp_files.remove(resolved_path)
-
-    if not resolved_path.is_file():
-        raise TrackioAPIError("Uploaded file is missing.")
-
-    return resolved_path
-
-
-def cleanup_uploaded_temp_file(file_path: str | Path) -> None:
-    try:
-        Path(file_path).unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def _invoke_handler(
@@ -141,8 +103,6 @@ async def version_handler(request: Request) -> Response:
     return JSONResponse(
         {
             "version": _TRACKIO_PACKAGE_VERSION,
-            "api_version": HTTP_API_VERSION,
-            "api_transport": "http",
             "mcp_enabled": mcp_enabled,
             "mcp_path": "/mcp" if mcp_enabled else None,
         }
@@ -179,7 +139,7 @@ def _json_schema_and_python_type(annotation: Any) -> tuple[dict[str, Any], str]:
     return {"type": "object"}, "Any"
 
 
-def build_gradio_api_info(api_registry: dict[str, Any]) -> dict[str, Any]:
+def build_api_info(api_registry: dict[str, Any]) -> dict[str, Any]:
     named_endpoints: dict[str, Any] = {}
     for name in sorted(api_registry.keys()):
         fn = api_registry[name]
@@ -224,65 +184,6 @@ def build_gradio_api_info(api_registry: dict[str, Any]) -> dict[str, Any]:
     return {"named_endpoints": named_endpoints, "unnamed_endpoints": {}}
 
 
-_MAX_GRADIO_CALL_EVENTS = 256
-
-
-def _hf_token_value_is_unset(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, str) and value.strip() == "":
-        return True
-    return False
-
-
-def _authorization_bearer_token(request: Request) -> str | None:
-    auth = request.headers.get("authorization") or request.headers.get("Authorization")
-    if not auth:
-        return None
-    parts = auth.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    tok = parts[1].strip()
-    return tok or None
-
-
-def _maybe_apply_hf_token_from_authorization(
-    request: Request, fn: Any, args: list[Any], kwargs: dict[str, Any]
-) -> None:
-    if not utils.on_spaces():
-        return
-    token = _authorization_bearer_token(request)
-    if not token:
-        return
-    sig = inspect.signature(fn)
-    if "hf_token" not in sig.parameters:
-        return
-    params = [p for p in sig.parameters.values() if p.name != "request"]
-    names = [p.name for p in params]
-    if "hf_token" not in names:
-        return
-    idx = names.index("hf_token")
-    if "hf_token" in kwargs:
-        if _hf_token_value_is_unset(kwargs["hf_token"]):
-            kwargs["hf_token"] = token
-        return
-    if idx < len(args):
-        if _hf_token_value_is_unset(args[idx]):
-            args[idx] = token
-        return
-    kwargs["hf_token"] = token
-
-
-def _store_gradio_call_result(
-    request: Request, event_id: str, api_name: str, data: Any
-) -> None:
-    with request.app.state.gradio_call_events_lock:
-        d = request.app.state.gradio_call_events
-        while len(d) >= _MAX_GRADIO_CALL_EVENTS:
-            d.pop(next(iter(d)))
-        d[event_id] = {"api_name": api_name, "data": data}
-
-
 async def run_api_request(request: Request, api_name: str) -> Response:
     api_registry = request.app.state.api_registry
     fn = api_registry.get(api_name)
@@ -314,8 +215,6 @@ async def run_api_request(request: Request, api_name: str) -> Response:
     if not isinstance(kwargs, dict):
         kwargs = {}
 
-    _maybe_apply_hf_token_from_authorization(request, fn, args, kwargs)
-
     try:
         result = _invoke_handler(fn, request, args=args, kwargs=kwargs)
         return JSONResponse({"data": _json_safe(result)})
@@ -329,87 +228,11 @@ async def api_handler(request: Request) -> Response:
     return await run_api_request(request, request.path_params["api_name"])
 
 
-async def gradio_api_info_handler(request: Request) -> Response:
+async def api_info_handler(request: Request) -> Response:
     return JSONResponse(
-        build_gradio_api_info(request.app.state.api_registry),
+        build_api_info(request.app.state.api_registry),
         headers={"Cache-Control": "no-store"},
     )
-
-
-async def gradio_call_post_handler(request: Request) -> Response:
-    api_name = request.path_params["api_name"]
-    resp = await run_api_request(request, api_name)
-    if resp.status_code != 200:
-        return resp
-    body = json.loads(bytes(resp.body).decode())
-    event_id = secrets.token_urlsafe(16)
-    _store_gradio_call_result(request, event_id, api_name, body["data"])
-    return JSONResponse({"event_id": event_id})
-
-
-async def gradio_call_poll_handler(request: Request) -> Response:
-    api_name = request.path_params["api_name"]
-    event_id = request.path_params["event_id"]
-    with request.app.state.gradio_call_events_lock:
-        event = request.app.state.gradio_call_events.pop(event_id, None)
-    if event is None:
-        logger.info("gradio_api poll: unknown or expired event_id")
-        return JSONResponse({"error": "Unknown or expired event_id"}, status_code=404)
-    if event.get("api_name") != api_name:
-        logger.info(
-            "gradio_api poll: api_name mismatch (path=%r, stored=%r)",
-            api_name,
-            event.get("api_name"),
-        )
-        with request.app.state.gradio_call_events_lock:
-            d = request.app.state.gradio_call_events
-            while len(d) >= _MAX_GRADIO_CALL_EVENTS:
-                d.pop(next(iter(d)))
-            d[event_id] = event
-        return JSONResponse({"error": "Unknown or expired event_id"}, status_code=404)
-
-    data = event["data"]
-    payload = json.dumps(_json_safe([data]))
-
-    async def sse() -> Any:
-        yield f"event: complete\ndata: {payload}\n\n"
-
-    return StreamingResponse(
-        sse(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-store",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-async def upload_handler(request: Request) -> Response:
-    upload_authorizer = getattr(request.app.state, "upload_authorizer", None)
-    if callable(upload_authorizer):
-        try:
-            upload_authorizer(request)
-        except TrackioAPIError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-
-    form = await request.form()
-    uploads = form.getlist("files")
-    saved_paths = []
-    for upload in uploads:
-        suffix = Path(getattr(upload, "filename", "") or "").suffix
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            prefix="trackio-upload-",
-            suffix=suffix,
-        ) as tmp:
-            tmp.write(await upload.read())
-            register_uploaded_temp_file(request, tmp.name)
-            saved_paths.append(tmp.name)
-    return JSONResponse({"paths": saved_paths})
-
-
-async def gradio_upload_alias_handler(request: Request) -> Response:
-    return await upload_handler(request)
 
 
 _DISALLOWED_FILE_SUFFIXES = frozenset(
@@ -424,8 +247,6 @@ async def file_handler(request: Request) -> Response:
     fp = Path(unquote(fs_path)).resolve(strict=False)
     if fp.suffix.lower() in _DISALLOWED_FILE_SUFFIXES:
         return Response("Not found", status_code=404)
-    if _is_allowed_file_path(fp, (utils.ARTIFACTS_DIR.resolve(),)):
-        return Response("Not found", status_code=404)
     allowed_roots = getattr(request.app.state, "allowed_file_roots", ())
     if fp.is_file() and _is_allowed_file_path(fp, allowed_roots):
         return FileResponse(str(fp))
@@ -434,102 +255,42 @@ async def file_handler(request: Request) -> Response:
 
 async def artifact_blob_handler(request: Request) -> Response:
     from trackio import cas  # noqa: PLC0415
-    from trackio import server as _server  # noqa: PLC0415
 
-    project = request.path_params.get("project")
     digest = request.path_params.get("digest")
     try:
-        project = _server._validate_project_name(project)
-        digest = _server._validate_sha256_digest(digest)
-    except TrackioAPIError:
+        digest = cas.validate_digest(digest)
+    except ValueError:
         return Response("Not found", status_code=404)
-    try:
-        _server.assert_can_stage_upload(request)
-    except TrackioAPIError:
-        return Response("Forbidden", status_code=403)
-    blob = cas.blob_path(project, digest)
+    project_dir = request.app.state.project_dir
+    blob = cas.blob_path(project_dir, digest)
     if not blob.is_file():
         return Response("Not found", status_code=404)
     return FileResponse(str(blob))
 
 
 def create_trackio_starlette_app(
-    oauth_routes: list[Route],
     api_registry: dict[str, Any],
+    project_dir: str | Path,
     extra_routes: list[Any] | None = None,
     mcp_lifespan: Any = None,
     mcp_enabled: bool = False,
     allowed_file_roots: list[str | Path] | None = None,
-    upload_authorizer: Callable[[Request], None] | None = None,
 ) -> Starlette:
-    routes: list[Any] = list(oauth_routes)
-    routes.extend(
-        [
-            Route("/version", endpoint=version_handler, methods=["GET"]),
-            Route("/api/upload", endpoint=upload_handler, methods=["POST"]),
-            Route("/api/{api_name:str}", endpoint=api_handler, methods=["POST"]),
-            Route("/file", endpoint=file_handler, methods=["GET"]),
-            Route(
-                "/artifact_blob/{project:str}/{digest:str}",
-                endpoint=artifact_blob_handler,
-                methods=["GET"],
-            ),
-        ]
-    )
-    if utils.on_spaces():
-        routes.extend(
-            [
-                Route(
-                    "/gradio_api/info",
-                    endpoint=gradio_api_info_handler,
-                    methods=["GET"],
-                ),
-                Route(
-                    "/gradio_api/info/",
-                    endpoint=gradio_api_info_handler,
-                    methods=["GET"],
-                ),
-                Route(
-                    "/gradio_api/upload",
-                    endpoint=gradio_upload_alias_handler,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/gradio_api/upload/",
-                    endpoint=gradio_upload_alias_handler,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/gradio_api/call/{api_name:str}",
-                    endpoint=gradio_call_post_handler,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/gradio_api/call/{api_name:str}/",
-                    endpoint=gradio_call_post_handler,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/gradio_api/call/{api_name:str}/{event_id:str}",
-                    endpoint=gradio_call_poll_handler,
-                    methods=["GET"],
-                ),
-                Route(
-                    "/gradio_api/call/{api_name:str}/{event_id:str}/",
-                    endpoint=gradio_call_poll_handler,
-                    methods=["GET"],
-                ),
-            ]
-        )
+    routes: list[Any] = [
+        Route("/version", endpoint=version_handler, methods=["GET"]),
+        Route("/api_info", endpoint=api_info_handler, methods=["GET"]),
+        Route("/api/{api_name:str}", endpoint=api_handler, methods=["POST"]),
+        Route("/file", endpoint=file_handler, methods=["GET"]),
+        Route(
+            "/artifact_blob/{digest:str}",
+            endpoint=artifact_blob_handler,
+            methods=["GET"],
+        ),
+    ]
     routes.extend(extra_routes or [])
     app = Starlette(routes=routes, lifespan=mcp_lifespan)
     app.state.api_registry = api_registry
     app.state.mcp_enabled = mcp_enabled
+    app.state.project_dir = Path(project_dir).expanduser().resolve()
     app.state.allowed_file_roots = _normalize_allowed_file_roots(allowed_file_roots)
-    app.state.upload_authorizer = upload_authorizer
-    app.state.uploaded_temp_files = set()
-    app.state.uploaded_temp_files_lock = threading.Lock()
-    if utils.on_spaces():
-        app.state.gradio_call_events = {}
-        app.state.gradio_call_events_lock = threading.Lock()
     return app

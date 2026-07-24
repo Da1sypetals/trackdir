@@ -12,44 +12,26 @@ from trackio.media import write_audio, write_video
 
 @pytest.fixture
 def temp_dir(monkeypatch):
-    """Fixture that creates a temporary TRACKIO_DIR."""
+    """Fixture that creates a temporary project directory."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
-        for name in ["trackio", "trackio.sqlite_storage", "trackio.utils"]:
-            monkeypatch.setattr(f"{name}.TRACKIO_DIR", Path(tmpdir))
-        for name in ["trackio.media.media", "trackio.utils"]:
-            monkeypatch.setattr(f"{name}.MEDIA_DIR", Path(tmpdir) / "media")
-        monkeypatch.setattr("trackio.utils.ARTIFACTS_DIR", Path(tmpdir) / "artifacts")
-        monkeypatch.setattr("trackio.bucket_storage.TRACKIO_DIR", Path(tmpdir))
         context_vars.current_run.set(None)
-        context_vars.current_project.set(None)
-        context_vars.current_server.set(None)
-        context_vars.current_space_id.set(None)
-        yield tmpdir
+        context_vars.current_project_dir.set(None)
+        yield Path(tmpdir)
         context_vars.current_run.set(None)
-        context_vars.current_project.set(None)
-        context_vars.current_server.set(None)
-        context_vars.current_space_id.set(None)
+        context_vars.current_project_dir.set(None)
 
 
 @pytest.fixture
-def stage_blob(temp_dir):
+def stage_blob():
     """Factory that writes `payload` into the local content-addressed store
-    for `project`, as Artifact._build_manifest would. Returns
+    for `project_dir`, as Artifact._build_manifest would. Returns
     (digest, blob_path)."""
 
-    def _stage(project, payload):
-        from trackio.utils import canonical_project_name
+    def _stage(project_dir, payload):
+        from trackio import cas
 
         digest = hashlib.sha256(payload).hexdigest()
-        blob = (
-            Path(temp_dir)
-            / "artifacts"
-            / canonical_project_name(project)
-            / "blobs"
-            / "sha256"
-            / digest[:2]
-            / digest
-        )
+        blob = cas.blob_path(project_dir, digest)
         blob.parent.mkdir(parents=True, exist_ok=True)
         blob.write_bytes(payload)
         return digest, blob
@@ -60,11 +42,6 @@ def stage_blob(temp_dir):
 @pytest.fixture(autouse=True)
 def set_numpy_seed():
     np.random.seed(0)
-
-
-@pytest.fixture(autouse=True)
-def disable_logbook_autonote(monkeypatch):
-    monkeypatch.setenv("TRACKIO_LOGBOOK_AUTONOTE", "0")
 
 
 @pytest.fixture

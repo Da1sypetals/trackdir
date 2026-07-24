@@ -4,71 +4,27 @@
     setThemePreference,
   } from "../lib/theme.js";
 
-  let { spaceId = null, selectedProject = null, projects = [] } = $props();
+  let { projectName = null } = $props();
 
   let themeChoice = $state(getThemePreference());
   let copiedIdx = $state(null);
-  let cliProject = $state(null);
-  let selectedAgent = $state("claude");
-  let agentCopied = $state(false);
-  let exampleCopied = $state(false);
-
-  const agents = [
-    { id: "claude", label: "Claude Code", flag: "--claude" },
-    { id: "codex", label: "Codex", flag: "--codex" },
-    { id: "cursor", label: "Cursor", flag: "--cursor" },
-    { id: "opencode", label: "OpenCode", flag: "--opencode" },
-  ];
-
-  let agentInstallCmd = $derived(
-    `trackio skills add ${agents.find((a) => a.id === selectedAgent)?.flag}`
-  );
-
-  let agentExample = $derived.by(() => {
-    const proj = cliProject || "<project>";
-    const examples = {
-      claude: `Use the trackio skill to look at the runs in project "${proj}" and find at which step the loss started diverging. Summarize what happened.`,
-      codex: `Use the trackio skill to pull the latest metrics for project "${proj}" and tell me which run has the best final eval accuracy.`,
-      cursor: `Use the trackio skill to compare the last two runs in project "${proj}" and explain why the learning rate change affected convergence.`,
-      opencode: `Use the trackio skill to get a summary of project "${proj}" and flag any runs where the loss spiked unexpectedly.`,
-    };
-    return examples[selectedAgent];
-  });
-
-  $effect(() => {
-    projects;
-    selectedProject;
-
-    if (cliProject && projects.includes(cliProject)) return;
-    if (selectedProject && projects.includes(selectedProject)) {
-      cliProject = selectedProject;
-      return;
-    }
-    cliProject = projects[0] ?? selectedProject ?? null;
-  });
 
   function switchTheme(value) {
     themeChoice = value;
     setThemePreference(value);
   }
 
-  function spaceFlag() {
-    return spaceId ? ` --space ${spaceId}` : "";
-  }
-
   let commands = $derived.by(() => {
-    const sf = spaceFlag();
-    const proj = cliProject || "<project>";
+    const dir = projectName ? `<dir>` : `<dir>`;
     return [
-      { title: "Launch dashboard", cmd: `trackio show` },
-      { title: "Launch dashboard (project)", cmd: `trackio show --project "${proj}"` },
-      { title: "List projects", cmd: `trackio${sf} list projects` },
-      { title: "List runs", cmd: `trackio${sf} list runs --project "${proj}"` },
-      { title: "List metrics", cmd: `trackio${sf} list metrics --project "${proj}" --run <run>` },
-      { title: "Project summary", cmd: `trackio${sf} get project --project "${proj}"` },
-      { title: "Run summary", cmd: `trackio${sf} get run --project "${proj}" --run <run>` },
-      { title: "Sync to HF Space", cmd: `trackio sync${sf} --project "${proj}"` },
-      { title: "Check sync status", cmd: `trackio status` },
+      { title: "Launch dashboard", cmd: `python -m trackio.show ${dir}` },
+      { title: "List runs", cmd: `trackio list runs --dir "${dir}"` },
+      { title: "List metrics", cmd: `trackio list metrics --dir "${dir}" --run <run>` },
+      { title: "Project summary", cmd: `trackio get project --dir "${dir}"` },
+      { title: "Run summary", cmd: `trackio get run --dir "${dir}" --run <run>` },
+      { title: "SQL query", cmd: `trackio query "${dir}" "SELECT * FROM metrics LIMIT 10"` },
+      { title: "Delete a run", cmd: `trackio delete-run --dir "${dir}" --run <run>` },
+      { title: "Rename a run", cmd: `trackio rename-run --dir "${dir}" --old-name <old> --new-name <new>` },
     ];
   });
 
@@ -79,19 +35,6 @@
       setTimeout(() => {
         if (copiedIdx === idx) copiedIdx = null;
       }, 1500);
-    } catch {}
-  }
-
-  async function copyText(text, which) {
-    try {
-      await navigator.clipboard.writeText(text);
-      if (which === "agent") {
-        agentCopied = true;
-        setTimeout(() => { agentCopied = false; }, 1500);
-      } else {
-        exampleCopied = true;
-        setTimeout(() => { exampleCopied = false; }, 1500);
-      }
     } catch {}
   }
 </script>
@@ -147,25 +90,9 @@
       <section class="settings-section">
         <h3 class="section-title">CLI Reference</h3>
         <p class="section-desc">
-          Common Trackio CLI commands.
-          {#if spaceId}
-            Connected to <strong>{spaceId}</strong> — remote commands include <code>--space</code> automatically.
-          {/if}
+          Common Trackio CLI commands. Each Trackio project is a directory on disk
+          containing a <code>trackio.db</code> database.
         </p>
-        {#if projects.length > 0}
-          <div class="project-selector">
-            <label class="selector-label" for="cli-project">Project</label>
-            <select
-              id="cli-project"
-              class="selector-select"
-              bind:value={cliProject}
-            >
-              {#each projects as p}
-                <option value={p}>{p}</option>
-              {/each}
-            </select>
-          </div>
-        {/if}
         <div class="commands-table">
           {#each commands as cmd, i}
             <div class="command-row">
@@ -192,75 +119,6 @@
               </div>
             </div>
           {/each}
-        </div>
-      </section>
-    </div>
-
-    <div class="col col-right">
-      <section class="settings-section">
-        <h3 class="section-title">Agent Skills</h3>
-        <p class="section-desc">Install Trackio as a skill in your AI coding agent to query experiments with natural language.</p>
-
-        <div class="agent-tabs">
-          {#each agents as agent}
-            <button
-              class="agent-tab"
-              class:active={selectedAgent === agent.id}
-              onclick={() => { selectedAgent = agent.id; }}
-            >
-              {agent.label}
-            </button>
-          {/each}
-        </div>
-
-        <div class="agent-panel">
-          <div class="install-block">
-            <span class="install-label">Run in Terminal to Install:</span>
-            <div class="install-cmd">
-              <code>{agentInstallCmd}</code>
-              <button
-                class="copy-btn"
-                class:copied={agentCopied}
-                onclick={() => copyText(agentInstallCmd, "agent")}
-                title="Copy"
-              >
-                {#if agentCopied}
-                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3.5 8.5l3 3 6-7" />
-                  </svg>
-                {:else}
-                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="5" y="5" width="8" height="8" rx="1.5" />
-                    <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" />
-                  </svg>
-                {/if}
-              </button>
-            </div>
-          </div>
-
-          <div class="example-block">
-            <div class="example-header">
-              <span class="example-label">Example prompt</span>
-              <button
-                class="copy-btn"
-                class:copied={exampleCopied}
-                onclick={() => copyText(agentExample, "example")}
-                title="Copy"
-              >
-                {#if exampleCopied}
-                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3.5 8.5l3 3 6-7" />
-                  </svg>
-                {:else}
-                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="5" y="5" width="8" height="8" rx="1.5" />
-                    <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" />
-                  </svg>
-                {/if}
-              </button>
-            </div>
-            <p class="example-text">{agentExample}</p>
-          </div>
         </div>
       </section>
     </div>
@@ -311,9 +169,6 @@
     border-radius: var(--radius-sm, 3px);
     font-size: 11px;
   }
-  .section-desc strong {
-    color: var(--color-accent, #f97316);
-  }
 
   .theme-switcher {
     display: inline-flex;
@@ -345,32 +200,6 @@
     background: var(--color-accent, #f97316);
     color: white;
     font-weight: 500;
-  }
-
-  .project-selector {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .selector-label {
-    font-size: var(--text-sm, 12px);
-    color: var(--body-text-color-subdued, #6b7280);
-    flex-shrink: 0;
-  }
-  .selector-select {
-    padding: 6px 10px;
-    border: 1px solid var(--border-color-primary, #e5e7eb);
-    border-radius: var(--radius-md, 4px);
-    background: var(--background-fill-primary, white);
-    color: var(--body-text-color, #1f2937);
-    font-size: var(--text-sm, 12px);
-    min-width: 160px;
-    cursor: pointer;
-  }
-  .selector-select:focus {
-    outline: none;
-    border-color: var(--color-accent, #f97316);
   }
 
   .commands-table {
@@ -430,95 +259,5 @@
   }
   .copy-btn.copied {
     color: var(--color-accent, #f97316);
-  }
-
-  .agent-tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border-color-primary, #e5e7eb);
-    gap: 0;
-    margin-bottom: 0;
-  }
-  .agent-tab {
-    padding: 8px 16px;
-    border: none;
-    background: none;
-    color: var(--body-text-color-subdued, #6b7280);
-    font-size: var(--text-sm, 12px);
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .agent-tab:hover {
-    color: var(--body-text-color, #1f2937);
-  }
-  .agent-tab.active {
-    color: var(--color-accent, #f97316);
-    border-bottom-color: var(--color-accent, #f97316);
-    font-weight: 500;
-  }
-
-  .agent-panel {
-    border: 1px solid var(--border-color-primary, #e5e7eb);
-    border-top: none;
-    border-radius: 0 0 var(--radius-lg, 8px) var(--radius-lg, 8px);
-    padding: 16px;
-  }
-
-  .install-block {
-    margin-bottom: 16px;
-  }
-  .install-label {
-    display: block;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--body-text-color-subdued, #6b7280);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-bottom: 6px;
-  }
-  .install-cmd {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--background-fill-secondary, #f3f4f6);
-    border-radius: var(--radius-md, 4px);
-    padding: 8px 10px;
-  }
-  .install-cmd code {
-    flex: 1;
-    font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
-    font-size: 12px;
-    color: var(--body-text-color, #1f2937);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .example-block {
-    background: var(--background-fill-secondary, #f9fafb);
-    border: 1px solid var(--border-color-primary, #e5e7eb);
-    border-radius: var(--radius-md, 4px);
-    padding: 12px;
-  }
-  .example-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-  .example-label {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--body-text-color-subdued, #6b7280);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .example-text {
-    margin: 0;
-    font-size: var(--text-sm, 12px);
-    color: var(--body-text-color, #1f2937);
-    line-height: 1.6;
-    font-style: italic;
   }
 </style>

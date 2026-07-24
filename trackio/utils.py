@@ -1,25 +1,46 @@
 import math
 import os
 import re
-import secrets
 import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlencode
+from typing import Any
+from urllib.parse import quote
 
-import huggingface_hub
 import numpy as np
-from huggingface_hub.constants import HF_HOME
 
-if TYPE_CHECKING:
-    from trackio.commit_scheduler import CommitScheduler
-    from trackio.dummy_commit_scheduler import DummyCommitScheduler
-
-RESERVED_KEYS = ["project", "run", "timestamp", "step", "time", "metrics"]
+RESERVED_KEYS = ["run", "timestamp", "step", "time", "metrics"]
 
 TRACKIO_LOGO_DIR = Path(__file__).parent / "assets"
+
+TRACKIO_LOG_LEVEL = os.environ.get("TRACKIO_LOG_LEVEL", "WARNING")
+
+DB_FILENAME = "trackio.db"
+MEDIA_DIRNAME = "media"
+ARTIFACTS_DIRNAME = "artifacts"
+FILES_DIRNAME = "files"
+
+
+def get_db_path(project_dir: str | Path) -> Path:
+    """The SQLite database path for a project directory."""
+    return Path(project_dir).expanduser().resolve() / DB_FILENAME
+
+
+def media_dir(project_dir: str | Path) -> Path:
+    return Path(project_dir).expanduser().resolve() / MEDIA_DIRNAME
+
+
+def artifacts_dir(project_dir: str | Path) -> Path:
+    return Path(project_dir).expanduser().resolve() / ARTIFACTS_DIRNAME
+
+
+def files_dir(project_dir: str | Path) -> Path:
+    return Path(project_dir).expanduser().resolve() / MEDIA_DIRNAME / FILES_DIRNAME
+
+
+def get_project_media_path(project_dir: str | Path, run: str, step: int = 0) -> Path:
+    return media_dir(project_dir) / run / str(step)
 
 
 def _emit_nonfatal_warning(message: str, *args, **kwargs) -> None:
@@ -129,181 +150,10 @@ def order_metrics_by_plot_preference(metrics: list[str]) -> tuple[list[str], dic
     return ordered_groups, result
 
 
-def on_spaces() -> bool:
-    return os.environ.get("SYSTEM") == "spaces"
-
-
-def resolve_space_id_and_server_url(
-    space_id: str | None, server_url: str | None
-) -> tuple[str | None, str | None]:
-    space_id = space_id or os.environ.get("TRACKIO_SPACE_ID")
-    server_url = server_url or os.environ.get("TRACKIO_SERVER_URL")
-    if space_id is not None:
-        server_url = None
-    return space_id, server_url
-
-
-def parse_trackio_server_url(url: str) -> tuple[str, str | None]:
-    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-
-    p = urlparse(url.strip())
-    if p.scheme not in ("http", "https"):
-        return url, None
-    pairs = parse_qsl(p.query, keep_blank_values=True)
-    write_token: str | None = None
-    rest: list[tuple[str, str]] = []
-    for k, v in pairs:
-        if k == "write_token":
-            write_token = v
-        else:
-            rest.append((k, v))
-    new_query = urlencode(rest)
-    rebuilt = urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
-    return rebuilt, write_token
-
-
-def _get_trackio_dir() -> Path:
-    if os.environ.get("TRACKIO_DIR"):
-        return Path(os.environ.get("TRACKIO_DIR"))
-    return Path(HF_HOME) / "trackio"
-
-
-TRACKIO_DIR = _get_trackio_dir()
-MEDIA_DIR = TRACKIO_DIR / "media"
-ARTIFACTS_DIR = TRACKIO_DIR / "artifacts"
-
-
-def canonical_project_name(project: str) -> str:
-    """Canonical on-disk identity for a project: keep only `[A-Za-z0-9_-]`,
-    falling back to `default` when nothing remains. The DB filename, the CAS
-    blob directory, the media directory, and the process lock all derive their
-    on-disk name from this one helper, so a project resolves to a single
-    location everywhere (e.g. `my.model` and `mymodel` both map to `mymodel`).
-    """
-    safe = "".join(c for c in project if c.isalnum() or c in ("-", "_")).rstrip()
-    return safe or "default"
-
-
-def project_media_dir(project: str) -> Path:
-    return MEDIA_DIR / canonical_project_name(project)
-
-
-def project_artifacts_dir(project: str) -> Path:
-    return ARTIFACTS_DIR / canonical_project_name(project)
-
-
-NETWORK_FILESYSTEM_TYPES = {
-    "nfs",
-    "nfs4",
-    "lustre",
-    "gpfs",
-    "cephfs",
-    "beegfs",
-    "fhgfs",
-    "glusterfs",
-    "ocfs2",
-    "panfs",
-    "cifs",
-    "smbfs",
-    "wekafs",
-}
-NETWORK_FILESYSTEM_SUBSTRINGS = ("nfs", "lustre", "weka", "gpfs", "beegfs", "ceph")
-
-_storage_mode_notified = False
-
-
-def _filesystem_type_for_path(path: Path) -> str | None:
-    try:
-        with open("/proc/mounts") as f:
-            mount_lines = f.readlines()
-    except OSError:
-        return None
-    try:
-        resolved = str(path.resolve())
-    except OSError:
-        resolved = str(path)
-    best_fstype = None
-    best_len = -1
-    for line in mount_lines:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        mount_point, fstype = parts[1], parts[2]
-        if resolved == mount_point or resolved.startswith(
-            mount_point.rstrip("/") + "/"
-        ):
-            if len(mount_point) > best_len:
-                best_fstype = fstype
-                best_len = len(mount_point)
-    return best_fstype
-
-
-def is_network_filesystem(path: Path) -> bool:
-    fstype = _filesystem_type_for_path(path)
-    if fstype is None:
-        return False
-    fstype = fstype.lower().removeprefix("fuse.")
-    if fstype in NETWORK_FILESYSTEM_TYPES:
-        return True
-    return any(sub in fstype for sub in NETWORK_FILESYSTEM_SUBSTRINGS)
-
-
-def get_inbox_poll_interval() -> float:
-    try:
-        interval = float(os.environ.get("TRACKIO_INBOX_POLL_INTERVAL", "15"))
-    except ValueError:
-        return 15.0
-    return max(interval, 5.0)
-
-
-def get_storage_mode() -> str:
-    """
-    Resolve how Trackio should persist data locally: "sqlite" (write directly to
-    the project SQLite database) or "jsonl" (write append-only JSONL fragments
-    to an inbox that the dashboard/Space imports). Controlled by
-    TRACKIO_STORAGE_MODE (auto|sqlite|jsonl); "auto" picks "jsonl" when
-    TRACKIO_DIR is detected to be on a network filesystem, where concurrent
-    SQLite writers are unsafe.
-    """
-    global _storage_mode_notified
-    mode = os.environ.get("TRACKIO_STORAGE_MODE", "auto").strip().lower()
-    if mode in ("sqlite", "jsonl"):
-        return mode
-    if mode != "auto":
-        _emit_nonfatal_warning(
-            f"Invalid TRACKIO_STORAGE_MODE: {mode!r}. Expected 'auto', 'sqlite', or 'jsonl'. Using 'auto'."
-        )
-    if is_network_filesystem(TRACKIO_DIR):
-        if not _storage_mode_notified:
-            _storage_mode_notified = True
-            print(
-                f"* Trackio directory {TRACKIO_DIR} appears to be on a network filesystem: "
-                "logging via append-only JSONL fragments instead of direct SQLite writes. "
-                "Set TRACKIO_STORAGE_MODE=sqlite to override."
-            )
-        return "jsonl"
-    return "sqlite"
-
-
-def get_or_create_project_hash(project: str) -> str:
-    hash_path = TRACKIO_DIR / f"{project}.hash"
-    if hash_path.exists():
-        return hash_path.read_text().strip()
-    hash_value = secrets.token_urlsafe(8)
-    TRACKIO_DIR.mkdir(parents=True, exist_ok=True)
-    hash_path.write_text(hash_value)
-    return hash_value
-
-
-def generate_readable_name(used_names: list[str], space_id: str | None = None) -> str:
+def generate_readable_name(used_names: list[str]) -> str:
     """
     Generates a random, readable name like "dainty-sunset-0".
-    If space_id is provided, generates username-timestamp format instead.
     """
-    if space_id is not None:
-        username = _get_default_namespace()
-        timestamp = int(time.time())
-        return f"{username}-{timestamp}"
     adjectives = [
         "dainty",
         "brave",
@@ -555,59 +405,21 @@ def simplify_column_names(columns: list[str]) -> dict[str, str]:
     return simplified_names
 
 
-def print_dashboard_instructions(project: str) -> None:
+def print_dashboard_instructions(project_dir: str | Path) -> None:
     """
     Prints instructions for viewing the Trackio dashboard.
 
     Args:
-        project: The name of the project to show dashboard for.
+        project_dir: The project directory to show the dashboard for.
     """
     ORANGE = "\033[38;5;208m"
     BOLD = "\033[1m"
     RESET = "\033[0m"
 
+    project_dir = Path(project_dir).expanduser().resolve()
     print("* View dashboard by running in your terminal:")
-    print(f'{BOLD}{ORANGE}trackio show --project "{project}"{RESET}')
-    print(f'* or by running in Python: trackio.show(project="{project}")')
-
-
-def print_write_token_instructions(full_url: str) -> None:
-    print()
-    print(f"* Trackio dashboard opened in browser with write access at: {full_url}")
-    print(
-        "* Only share this write_token with trusted users, as it allows them to write logs, "
-        "rename/delete runs, and connect MCP tools."
-    )
-
-
-def preprocess_space_and_dataset_ids(
-    space_id: str | None,
-    dataset_id: str | None,
-    bucket_id: str | None = None,
-) -> tuple[str | None, str | None, str | None]:
-    """
-    Preprocesses the Space and Bucket names to ensure they are valid
-    "username/name" format. When space_id is provided and bucket_id is not
-    explicitly set, auto-generates a bucket_id.
-    """
-    if space_id is not None and "/" not in space_id:
-        username = _get_default_namespace()
-        space_id = f"{username}/{space_id}"
-    if dataset_id is not None:
-        warnings.warn(
-            "`dataset_id` is deprecated. Use `bucket_id` instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-    if dataset_id is not None and "/" not in dataset_id:
-        username = _get_default_namespace()
-        dataset_id = f"{username}/{dataset_id}"
-    if bucket_id is not None and "/" not in bucket_id:
-        username = _get_default_namespace()
-        bucket_id = f"{username}/{bucket_id}"
-    if space_id is not None and dataset_id is None and bucket_id is None:
-        bucket_id = f"{space_id}-bucket"
-    return space_id, dataset_id, bucket_id
+    print(f'{BOLD}{ORANGE}python -m trackio.show "{project_dir}"{RESET}')
+    print(f'* or by running in Python: trackio.show(dir="{project_dir}")')
 
 
 def fibo():
@@ -952,62 +764,6 @@ def group_metrics_by_prefix(metrics: list[str]) -> dict[str, list[str]]:
     return groups
 
 
-def get_sync_status(scheduler: "CommitScheduler | DummyCommitScheduler") -> int | None:
-    """Get the sync status from the CommitScheduler in an integer number of minutes, or None if not synced yet."""
-    if getattr(
-        scheduler, "last_push_time", None
-    ):  # DummyCommitScheduler doesn't have last_push_time
-        time_diff = time.time() - scheduler.last_push_time
-        return int(time_diff / 60)
-    else:
-        return None
-
-
-def generate_share_url(
-    project: str,
-    metrics: str,
-    selected_runs: list = None,
-    hide_headers: bool = False,
-) -> str:
-    """Generate the shareable Space URL based on current settings."""
-    space_host = os.environ.get("SPACE_HOST", "")
-    if not space_host:
-        return ""
-
-    params: dict[str, str] = {}
-
-    if project:
-        params["project"] = project
-
-    if metrics and metrics.strip():
-        params["metrics"] = metrics
-
-    if selected_runs:
-        params["runs"] = ",".join(selected_runs)
-
-    if hide_headers:
-        params["accordion"] = "hidden"
-    params["sidebar"] = "hidden"
-    params["navbar"] = "hidden"
-
-    query_string = urlencode(params)
-    return f"https://{space_host}?{query_string}"
-
-
-def generate_embed_code(
-    project: str,
-    metrics: str,
-    selected_runs: list = None,
-    hide_headers: bool = False,
-) -> str:
-    """Generate the embed iframe code based on current settings."""
-    embed_url = generate_share_url(project, metrics, selected_runs, hide_headers)
-    if not embed_url:
-        return ""
-
-    return f'<iframe src="{embed_url}" style="width:1600px; height:500px; border:0;"></iframe>'
-
-
 def serialize_values(metrics):
     """
     Serialize values to make them JSON-compliant.
@@ -1043,8 +799,7 @@ def serialize_values(metrics):
 
 def deserialize_values(metrics):
     """
-    Deserialize infinity and NaN string values back to their numeric forms.
-    Only handles top-level string values.
+    Deserialize values from JSON-compliant format.
 
     Converts:
     - "Infinity" -> float('inf')
@@ -1068,18 +823,6 @@ def deserialize_values(metrics):
         else:
             result[key] = value
     return result
-
-
-def get_full_url(
-    base_url: str, project: str | None, write_token: str, footer: bool = True
-) -> str:
-    params = []
-    if project:
-        params.append(f"project={project}")
-    params.append(f"write_token={write_token}")
-    if not footer:
-        params.append("footer=false")
-    return base_url + "?" + "&".join(params)
 
 
 def embed_url_in_notebook(url: str) -> None:
@@ -1114,22 +857,6 @@ def to_json_safe(obj):
     return str(obj)
 
 
-def get_space() -> str | None:
-    """
-    Get the space ID ("user/space") if Trackio is running in a Space, or None if not.
-    """
-    return os.environ.get("SPACE_ID")
-
-
 def ordered_subset(items: list[str], subset: list[str] | None) -> list[str]:
     subset_set = set(subset or [])
     return [item for item in items if item in subset_set]
-
-
-def _get_default_namespace() -> str:
-    """Get the default namespace (username).
-
-    This function uses caching to avoid repeated API calls to /whoami-v2.
-    """
-    token = huggingface_hub.get_token()
-    return huggingface_hub.whoami(token=token, cache=True)["name"]

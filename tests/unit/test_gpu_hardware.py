@@ -17,7 +17,7 @@ from trackio import gpu as trackio_gpu
 @pytest.fixture
 def isolated_run(temp_dir):
     """Spin up a trackio run that writes to a temp dir, finish on teardown."""
-    run = trackio.init(project="gpu-tests")
+    run = trackio.init(dir=temp_dir / "gpu-tests")
     try:
         yield run
     finally:
@@ -81,7 +81,7 @@ def test_log_gpu_during_torch_workload(isolated_run):
 
 def test_trackio_init_compatible_with_cuda(temp_dir):
     """Smoke test: importing trackio + initializing a run should work on GPU hosts."""
-    trackio.init(project="gpu-smoke")
+    trackio.init(dir=temp_dir / "gpu-smoke")
     trackio.log({"step": 1, "loss": 0.5})
     trackio.finish()
 
