@@ -64,8 +64,9 @@
   let xAxis = $state("step");
   let logScaleX = $state(false);
   let logScaleY = $state(false);
-  let outlierFilterHead = $state(0);
-  let outlierFilterTail = $state(0);
+  let outlierFilterEnabled = $state(false);
+  let outlierFilterHead = $state(0.1);
+  let outlierFilterTail = $state(0.1);
   let metricFilter = $state("");
   let realtimeEnabled = $state(true);
   let showHeaders = $state(true);
@@ -397,6 +398,7 @@
       bind:xAxis
       bind:logScaleX
       bind:logScaleY
+      bind:outlierFilterEnabled
       bind:outlierFilterHead
       bind:outlierFilterTail
       bind:metricFilter
@@ -431,6 +433,7 @@
           {xAxis}
           {logScaleX}
           {logScaleY}
+          {outlierFilterEnabled}
           {outlierFilterHead}
           {outlierFilterTail}
           {metricFilter}

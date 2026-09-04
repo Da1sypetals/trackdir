@@ -4,6 +4,7 @@
   import GradioCheckbox from "./GradioCheckbox.svelte";
   import GradioSlider from "./GradioSlider.svelte";
   import GradioTextbox from "./GradioTextbox.svelte";
+  import LogPercentSlider from "./LogPercentSlider.svelte";
   import { buildColorMap, getColorForIndex } from "../lib/stores.js";
   import { latestOnlySelection } from "../lib/selection.js";
   import { filterMetricsByRegex } from "../lib/dataProcessing.js";
@@ -22,8 +23,9 @@
     xAxis = $bindable("step"),
     logScaleX = $bindable(false),
     logScaleY = $bindable(false),
-    outlierFilterHead = $bindable(0),
-    outlierFilterTail = $bindable(0),
+    outlierFilterEnabled = $bindable(false),
+    outlierFilterHead = $bindable(0.1),
+    outlierFilterTail = $bindable(0.1),
     metricFilter = $bindable(""),
     realtimeEnabled = $bindable(true),
     showHeaders = $bindable(true),
@@ -33,13 +35,6 @@
     logoUrls = { light: "/static/trackio/trackio_logo_type_light_transparent.png", dark: "/static/trackio/trackio_logo_type_dark_transparent.png" },
     darkMode = false,
   } = $props();
-
-  const OUTLIER_FILTER_CHOICES = [
-    { label: "Off", value: 0 },
-    { label: "1%", value: 0.01 },
-    { label: "0.1%", value: 0.001 },
-    { label: "0.01%", value: 0.0001 },
-  ];
 
   let availableXAxes = $derived.by(() => {
     let axes = ["step", "time", ...metricColumns];
@@ -334,18 +329,14 @@
 
           {#if currentPage === "metrics"}
             <div class="section">
-              <Dropdown
-                label="Outlier filter (top)"
-                choices={OUTLIER_FILTER_CHOICES}
-                bind:value={outlierFilterHead}
-                filterable={false}
+              <GradioCheckbox
+                label="Outlier filter"
+                bind:checked={outlierFilterEnabled}
               />
-              <Dropdown
-                label="Outlier filter (bottom)"
-                choices={OUTLIER_FILTER_CHOICES}
-                bind:value={outlierFilterTail}
-                filterable={false}
-              />
+              {#if outlierFilterEnabled}
+                <LogPercentSlider label="Top (head)" bind:value={outlierFilterHead} />
+                <LogPercentSlider label="Bottom (tail)" bind:value={outlierFilterTail} />
+              {/if}
             </div>
           {/if}
         {/if}

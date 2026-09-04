@@ -7,8 +7,9 @@ export function createDashboardState() {
   let xAxis = $state("step");
   let logScaleX = $state(false);
   let logScaleY = $state(false);
-  let outlierFilterHead = $state(0);
-  let outlierFilterTail = $state(0);
+  let outlierFilterEnabled = $state(false);
+  let outlierFilterHead = $state(0.1);
+  let outlierFilterTail = $state(0.1);
   let metricFilter = $state("");
   let realtimeEnabled = $state(true);
   let showHeaders = $state(true);
@@ -66,6 +67,12 @@ export function createDashboardState() {
     },
     set logScaleY(v) {
       logScaleY = v;
+    },
+    get outlierFilterEnabled() {
+      return outlierFilterEnabled;
+    },
+    set outlierFilterEnabled(v) {
+      outlierFilterEnabled = v;
     },
     get outlierFilterHead() {
       return outlierFilterHead;
@@ -129,13 +136,6 @@ export function createDashboardState() {
     },
   };
 }
-
-export const OUTLIER_FILTER_OPTIONS = [
-  { value: 0, label: "Off" },
-  { value: 0.01, label: "1%" },
-  { value: 0.001, label: "0.1%" },
-  { value: 0.0001, label: "0.01%" },
-];
 
 export const DEFAULT_COLORS = [
   "#A8769B",

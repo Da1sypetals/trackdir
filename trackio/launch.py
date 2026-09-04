@@ -33,8 +33,8 @@ def start_server(
     if server_port is None:
         scan_host = "" if server_name == "0.0.0.0" else server_name
         server_port = get_first_available_port(
-            int(os.environ.get("GRADIO_SERVER_PORT", 7860)),
-            int(os.environ.get("GRADIO_SERVER_PORT", 7860)) + 100,
+            int(os.environ.get("GRADIO_SERVER_PORT", 7720)),
+            int(os.environ.get("GRADIO_SERVER_PORT", 7720)) + 100,
             host=scan_host or "127.0.0.1",
         )
 

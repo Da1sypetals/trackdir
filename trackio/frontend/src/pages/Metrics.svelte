@@ -28,8 +28,9 @@
     xAxis = "step",
     logScaleX = false,
     logScaleY = false,
-    outlierFilterHead = 0,
-    outlierFilterTail = 0,
+    outlierFilterEnabled = false,
+    outlierFilterHead = 0.1,
+    outlierFilterTail = 0.1,
     metricFilter = "",
     showHeaders = true,
     appBootstrapReady = false,
@@ -65,8 +66,8 @@
 
   function getPlotResult(metric) {
     return computeMetricPlotData(masterData, xColumn, metric, xLim, {
-      head: outlierFilterHead,
-      tail: outlierFilterTail,
+      head: outlierFilterEnabled ? outlierFilterHead / 100 : 0,
+      tail: outlierFilterEnabled ? outlierFilterTail / 100 : 0,
     });
   }
 

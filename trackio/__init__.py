@@ -612,7 +612,7 @@ def show(
             The host to bind the server to. If not provided, defaults to `'127.0.0.1'`
             (localhost only). Set to `'0.0.0.0'` to allow remote access.
         server_port (`int`, *optional*):
-            Port to bind. If not set, scans from `GRADIO_SERVER_PORT` (default 7860).
+            Port to bind. If not set, scans from `GRADIO_SERVER_PORT` (default 7720).
         frontend_dir (`str | Path`, *optional*):
             Directory containing a custom static frontend. Must contain `index.html`.
             If not provided, Trackio checks `TRACKIO_FRONTEND_DIR`, then the persistent
