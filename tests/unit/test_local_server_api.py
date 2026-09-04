@@ -239,3 +239,130 @@ def test_local_dashboard_supports_mcp(temp_dir):
         asyncio.run(check_mcp())
     finally:
         app.close()
+
+
+def test_bundled_frontend_serves_rebuilt_outlier_filter(temp_dir):
+    from trackio.frontend_config import BUNDLED_FRONTEND_DIR
+
+    js_files = list((BUNDLED_FRONTEND_DIR / "assets").glob("index-*.js"))
+    assert len(js_files) == 1
+    js_name = js_files[0].name
+    assert "Outlier filter" in js_files[0].read_text()
+    assert "Top (head)" in js_files[0].read_text()
+
+    app, url = trackio.show(
+        dir=temp_dir / "proj",
+        block_thread=False,
+        open_browser=False,
+    )
+    try:
+        js = httpx.get(f"{url.rstrip('/')}/assets/{js_name}", timeout=5)
+        js.raise_for_status()
+        assert "Outlier filter" in js.text
+        assert "Top (head)" in js.text
+        assert "locked-project" in js.text
+    finally:
+        app.close()
+
+
+def test_show_reads_legacy_project_named_db(temp_dir):
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    SQLiteStorage.init_db(project_dir / "trackio.db")
+    SQLiteStorage.bulk_log(
+        db_path=project_dir / "mel_ae.db",
+        run="mel_ae",
+        metrics_list=[{"train/recon_loss": 0.12}],
+        steps=[3],
+    )
+
+    app, url = trackio.show(dir=project_dir, block_thread=False, open_browser=False)
+    try:
+        page = httpx.get(url, timeout=5)
+        page.raise_for_status()
+        assert "No projects" not in page.text
+
+        projects_response = httpx.post(
+            f"{url.rstrip('/')}/api/get_all_projects", json={}, timeout=5
+        )
+        projects_response.raise_for_status()
+        assert projects_response.json()["data"] == ["mel_ae"]
+
+        runs_response = httpx.post(
+            f"{url.rstrip('/')}/api/get_runs_for_project",
+            json={"project": "mel_ae"},
+            timeout=5,
+        )
+        runs_response.raise_for_status()
+        runs = runs_response.json()["data"]
+        assert len(runs) == 1
+        assert runs[0]["name"] == "mel_ae"
+        run_id = runs[0]["id"]
+
+        settings_response = httpx.post(
+            f"{url.rstrip('/')}/api/get_settings", json={}, timeout=5
+        )
+        settings_response.raise_for_status()
+
+        tabs_response = httpx.post(
+            f"{url.rstrip('/')}/api/get_tab_availability",
+            json={"project": "mel_ae"},
+            timeout=5,
+        )
+        tabs_response.raise_for_status()
+        assert tabs_response.json()["data"]["metrics"] is True
+
+        metrics_response = httpx.post(
+            f"{url.rstrip('/')}/api/get_metrics_for_run",
+            json={"project": "mel_ae", "run": "mel_ae", "run_id": run_id},
+            timeout=5,
+        )
+        metrics_response.raise_for_status()
+        assert "train/recon_loss" in metrics_response.json()["data"]
+
+        logs_response = httpx.post(
+            f"{url.rstrip('/')}/api/get_logs_batch",
+            json={
+                "project": "mel_ae",
+                "runs": [{"run": "mel_ae", "run_id": run_id}],
+                "scalar_only": True,
+            },
+            timeout=5,
+        )
+        logs_response.raise_for_status()
+        logs = logs_response.json()["data"]
+        assert len(logs) == 1
+        assert logs[0]["logs"][0]["train/recon_loss"] == 0.12
+    finally:
+        app.close()
+
+
+def test_create_app_does_not_create_trackio_db_when_legacy_db_has_data(temp_dir):
+    from trackio.server import build_api_registry, create_app
+
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    SQLiteStorage.bulk_log(
+        db_path=project_dir / "mel_ae.db",
+        run="mel_ae",
+        metrics_list=[{"loss": 1.0}],
+        steps=[0],
+    )
+
+    create_app(project_dir)
+    assert not (project_dir / "trackio.db").exists()
+    registry = build_api_registry(project_dir)
+    assert registry["get_all_projects"]() == ["mel_ae"]
+    runs = registry["get_runs_for_project"]()
+    assert len(runs) == 1
+    assert runs[0]["name"] == "mel_ae"
+
+
+def test_get_all_projects_canonical_db_uses_directory_name(temp_dir):
+    from trackio.server import build_api_registry
+
+    project_dir = temp_dir / "my_exp"
+    trackio.init(dir=project_dir, name="run-a")
+    trackio.log(metrics={"loss": 0.1})
+    trackio.finish()
+    assert build_api_registry(project_dir)["get_all_projects"]() == ["my_exp"]

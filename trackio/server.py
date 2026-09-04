@@ -94,7 +94,12 @@ class TrackioDashboardApp:
 def build_api_registry(project_dir: str | Path) -> dict[str, Any]:
     """Build the API function registry bound to a single project directory."""
     project_dir = Path(project_dir).expanduser().resolve()
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
+
+    def get_all_projects() -> list[str]:
+        if db_path.name == utils.DB_FILENAME:
+            return [project_dir.name]
+        return [db_path.stem]
 
     def get_runs_for_project() -> list[dict[str, Any]]:
         return SQLiteStorage.get_run_records(db_path)
@@ -402,6 +407,7 @@ def build_api_registry(project_dir: str | Path) -> dict[str, Any]:
         "get_run_artifacts": get_run_artifacts,
         "get_alerts": get_alerts,
         "get_metric_values": get_metric_values,
+        "get_all_projects": get_all_projects,
         "get_runs_for_project": get_runs_for_project,
         "get_run_configs": get_run_configs,
         "get_metrics_for_run": get_metrics_for_run,
@@ -431,7 +437,9 @@ def create_app(
 ) -> Starlette:
     """Create the Starlette dashboard app bound to a single project directory."""
     project_dir = Path(project_dir).expanduser().resolve()
-    SQLiteStorage.init_db(utils.get_db_path(project_dir))
+    db_path = utils.resolve_db_path(project_dir)
+    if not db_path.exists():
+        SQLiteStorage.init_db(utils.get_db_path(project_dir))
 
     registry = build_api_registry(project_dir)
 

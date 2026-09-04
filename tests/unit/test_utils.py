@@ -214,3 +214,97 @@ def test_downsample_with_none_x_lim():
     result_df, result_x_lim = utils.downsample(empty_df, "x", "y", None, (2, None))
     assert result_x_lim == (2, 0)
     assert len(result_df) == 0
+
+
+def _log_one_metric(db_path, run="mel_ae", loss=0.5, step=0):
+    from trackio.sqlite_storage import SQLiteStorage
+
+    SQLiteStorage.bulk_log(
+        db_path=db_path,
+        run=run,
+        metrics_list=[{"loss": loss}],
+        steps=[step],
+    )
+
+
+def test_get_db_path_is_canonical_trackio_db(temp_dir):
+    project_dir = temp_dir / "track"
+    assert utils.get_db_path(project_dir) == (project_dir / "trackio.db")
+
+
+def test_resolve_db_path_empty_directory_uses_canonical(temp_dir):
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    assert utils.resolve_db_path(project_dir) == project_dir / "trackio.db"
+
+
+def test_resolve_db_path_missing_directory_uses_canonical(temp_dir):
+    project_dir = temp_dir / "does_not_exist"
+    assert utils.resolve_db_path(project_dir) == project_dir / "trackio.db"
+
+
+def test_resolve_db_path_canonical_with_data(temp_dir):
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    _log_one_metric(project_dir / "trackio.db")
+    assert utils.resolve_db_path(project_dir) == project_dir / "trackio.db"
+
+
+def test_resolve_db_path_legacy_project_named_db(temp_dir):
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    legacy = project_dir / "mel_ae.db"
+    _log_one_metric(legacy)
+    assert utils.resolve_db_path(project_dir) == legacy
+
+
+def test_resolve_db_path_skips_empty_canonical_when_legacy_has_data(temp_dir):
+    from trackio.sqlite_storage import SQLiteStorage
+
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    SQLiteStorage.init_db(project_dir / "trackio.db")
+    legacy = project_dir / "mel_ae.db"
+    _log_one_metric(legacy, step=12)
+    assert utils.resolve_db_path(project_dir) == legacy
+
+
+def test_resolve_db_path_configs_only_counts_as_data(temp_dir):
+    import sqlite3
+
+    from trackio.sqlite_storage import SQLiteStorage
+
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    legacy = project_dir / "mel_ae.db"
+    SQLiteStorage.init_db(legacy)
+    with sqlite3.connect(legacy) as conn:
+        conn.execute(
+            "INSERT INTO configs (run_id, run_name, config, created_at) VALUES (?, ?, ?, ?)",
+            ("run1", "run1", "{}", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+    assert utils.resolve_db_path(project_dir) == legacy
+
+
+def test_resolve_db_path_ignores_unrelated_sqlite_file(temp_dir):
+    import sqlite3
+
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    other = project_dir / "other.db"
+    with sqlite3.connect(other) as conn:
+        conn.execute("CREATE TABLE foo (id INTEGER)")
+        conn.commit()
+    legacy = project_dir / "mel_ae.db"
+    _log_one_metric(legacy)
+    assert utils.resolve_db_path(project_dir) == legacy
+
+
+def test_resolve_db_path_multiple_populated_databases_raises(temp_dir):
+    project_dir = temp_dir / "track"
+    project_dir.mkdir()
+    _log_one_metric(project_dir / "mel_ae.db")
+    _log_one_metric(project_dir / "other.db", run="other")
+    with pytest.raises(RuntimeError, match="multiple Trackio databases with data"):
+        utils.resolve_db_path(project_dir)

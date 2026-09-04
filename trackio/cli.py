@@ -33,7 +33,7 @@ def _resolve_dir(args, required: bool = True) -> Path:
 
 def _require_project(args) -> Path:
     project_dir = _resolve_dir(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     if not db_path.exists():
         error_exit(f"No trackio project found at '{project_dir}'.")
     return project_dir
@@ -62,7 +62,7 @@ def _handle_show(args):
 
 def _handle_list_runs(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     runs = SQLiteStorage.get_runs(db_path)
     if args.json:
         print(format_json({"dir": str(project_dir), "runs": runs}))
@@ -72,7 +72,7 @@ def _handle_list_runs(args):
 
 def _handle_list_metrics(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     metrics = SQLiteStorage.get_all_metrics_for_run(db_path, args.run)
     print(f"Run: {args.run}")
@@ -84,7 +84,7 @@ def _handle_list_metrics(args):
 
 def _handle_list_system_metrics(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     metrics = SQLiteStorage.get_all_system_metrics_for_run(db_path, args.run)
     print(f"Run: {args.run}")
@@ -96,7 +96,7 @@ def _handle_list_system_metrics(args):
 
 def _handle_list_alerts(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     alerts = SQLiteStorage.get_alerts(db_path, run_name=args.run)
     print(format_alerts(alerts))
@@ -104,7 +104,7 @@ def _handle_list_alerts(args):
 
 def _handle_list_reports(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     logs = SQLiteStorage.get_logs(db_path, args.run)
     reports = _extract_reports(args.run, logs)
@@ -121,7 +121,7 @@ def _handle_list_reports(args):
 
 def _handle_list_artifacts(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     artifacts = SQLiteStorage.get_artifacts(db_path)
     if args.json:
         print(format_json({"dir": str(project_dir), "artifacts": artifacts}))
@@ -140,7 +140,7 @@ def _handle_get_project(args):
 
 def _handle_get_run(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     summary = trackio.server.build_api_registry(project_dir)["get_run_summary"](
         run=args.run
@@ -153,7 +153,7 @@ def _handle_get_run(args):
 
 def _handle_get_artifact(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     record = SQLiteStorage.get_artifact_manifest(db_path, args.artifact, args.spec)
     if record is None:
         error_exit(f"Artifact '{args.artifact}' not found in '{project_dir}'.")
@@ -177,7 +177,7 @@ def _handle_get_artifact(args):
 
 def _handle_get_metric(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     metrics = SQLiteStorage.get_all_metrics_for_run(db_path, args.run)
     if args.metric not in metrics:
@@ -214,7 +214,7 @@ def _handle_get_snapshot(args):
             "Provide --step, --around (with --window), or --at-time (with --window)."
         )
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     snapshot = SQLiteStorage.get_snapshot(
         db_path,
@@ -245,7 +245,7 @@ def _handle_get_snapshot(args):
 
 def _handle_get_system_metric(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     system_metrics = SQLiteStorage.get_system_logs(db_path, args.run)
     if args.metric:
@@ -289,7 +289,7 @@ def _handle_get_system_metric(args):
 
 def _handle_get_alerts(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     alerts = SQLiteStorage.get_alerts(
         db_path, run_name=args.run, level=args.level, since=args.since
     )
@@ -311,7 +311,7 @@ def _handle_get_alerts(args):
 
 def _handle_get_report(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     logs = SQLiteStorage.get_logs(db_path, args.run)
     reports = _extract_reports(args.run, logs, report_name=args.report)
@@ -370,7 +370,7 @@ def _extract_reports(
 def _handle_query(args):
     project_dir = _require_project(args)
     try:
-        result = SQLiteStorage.query(utils.get_db_path(project_dir), args.sql)
+        result = SQLiteStorage.query(utils.resolve_db_path(project_dir), args.sql)
     except FileNotFoundError as e:
         error_exit(str(e))
     except ValueError as e:
@@ -383,7 +383,7 @@ def _handle_query(args):
 
 def _handle_delete_run(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     _require_run(args, db_path)
     if not args.force:
         response = input(
@@ -401,7 +401,7 @@ def _handle_delete_run(args):
 
 def _handle_rename_run(args):
     project_dir = _require_project(args)
-    db_path = utils.get_db_path(project_dir)
+    db_path = utils.resolve_db_path(project_dir)
     try:
         SQLiteStorage.rename_run(db_path, args.old_name, args.new_name)
     except ValueError as e:

@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import sqlite3
 import time
 import warnings
 from datetime import datetime, timezone
@@ -23,8 +24,52 @@ FILES_DIRNAME = "files"
 
 
 def get_db_path(project_dir: str | Path) -> Path:
-    """The SQLite database path for a project directory."""
+    """The SQLite database path written by `trackio.init()`."""
     return Path(project_dir).expanduser().resolve() / DB_FILENAME
+
+
+def _db_has_trackio_data(db_path: Path) -> bool:
+    conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    try:
+        has_metrics = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metrics'"
+        ).fetchone()
+        if has_metrics is None:
+            return False
+        if conn.execute("SELECT 1 FROM metrics LIMIT 1").fetchone() is not None:
+            return True
+        has_configs = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='configs'"
+        ).fetchone()
+        if has_configs is None:
+            return False
+        return conn.execute("SELECT 1 FROM configs LIMIT 1").fetchone() is not None
+    finally:
+        conn.close()
+
+
+def resolve_db_path(project_dir: str | Path) -> Path:
+    """The SQLite database path that `trackio.show` should open for a directory."""
+    project_dir = Path(project_dir).expanduser().resolve()
+    canonical = project_dir / DB_FILENAME
+    if not project_dir.is_dir():
+        return canonical
+
+    populated: list[Path] = []
+    for db_path in sorted(project_dir.glob("*.db")):
+        if not db_path.is_file():
+            continue
+        if _db_has_trackio_data(db_path):
+            populated.append(db_path)
+
+    if len(populated) > 1:
+        names = ", ".join(path.name for path in populated)
+        raise RuntimeError(
+            f"Directory '{project_dir}' contains multiple Trackio databases with data: {names}"
+        )
+    if len(populated) == 1:
+        return populated[0]
+    return canonical
 
 
 def media_dir(project_dir: str | Path) -> Path:
