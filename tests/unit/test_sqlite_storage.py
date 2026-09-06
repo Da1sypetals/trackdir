@@ -451,3 +451,64 @@ def test_query_normalizes_bytes(temp_dir):
 def test_query_missing_project(temp_dir):
     with pytest.raises(FileNotFoundError):
         SQLiteStorage.query(get_db_path(temp_dir / "nonexistent"), "SELECT 1")
+
+
+def test_get_logs_keeps_all_eval_points_when_subsampling(temp_dir):
+    db_path = get_db_path(temp_dir / "eval_keep")
+    metrics_list = []
+    steps = []
+    timestamps = []
+    eval_recon = []
+    eval_acc = []
+    for step in range(40):
+        train_metrics = {"train/loss": float(step)}
+        if step == 1:
+            train_metrics["train/warmup"] = 1.0
+        metrics_list.append(train_metrics)
+        steps.append(step)
+        timestamps.append(f"2026-01-01T00:{step:02d}:00+00:00")
+        if step % 10 == 0:
+            recon = float(step) + 0.5
+            acc = 0.1 + step / 100.0
+            eval_recon.append(recon)
+            eval_acc.append(acc)
+            metrics_list.append(
+                {"eval/recon_loss": recon, "eval/disc_accuracy": acc}
+            )
+            steps.append(step)
+            timestamps.append(f"2026-01-01T00:{step:02d}:30+00:00")
+
+    SQLiteStorage.bulk_log(
+        db_path=db_path,
+        run="mel_ae",
+        metrics_list=metrics_list,
+        steps=steps,
+        timestamps=timestamps,
+    )
+
+    logs = SQLiteStorage.get_logs(db_path, run="mel_ae", max_points=8)
+    assert [row["eval/recon_loss"] for row in logs if "eval/recon_loss" in row] == eval_recon
+    assert [
+        row["eval/disc_accuracy"] for row in logs if "eval/disc_accuracy" in row
+    ] == eval_acc
+    assert any("train/loss" in row for row in logs)
+    assert len(logs) <= 8 + 1 + len(eval_recon)
+
+    batch = SQLiteStorage.get_logs_batch(
+        db_path,
+        runs=[{"run": "mel_ae"}],
+        max_points=8,
+        scalar_only=True,
+    )
+    assert len(batch) == 1
+    assert set(batch[0]["metrics"]) == {
+        "train/loss",
+        "train/warmup",
+        "eval/recon_loss",
+        "eval/disc_accuracy",
+    }
+    assert [
+        row["eval/recon_loss"]
+        for row in batch[0]["logs"]
+        if "eval/recon_loss" in row
+    ] == eval_recon

@@ -1016,14 +1016,52 @@ class SQLiteStorage:
         return flags
 
     @staticmethod
-    def _subsample_metric_rows(rows: list[Any], max_points: int | None) -> list[Any]:
+    def _is_eval_metric_key(key: Any) -> bool:
+        return isinstance(key, str) and key.startswith("eval/")
+
+    @staticmethod
+    def _is_scalar_metric_value(value: Any) -> bool:
+        return isinstance(value, int | float) and not isinstance(value, bool)
+
+    @staticmethod
+    def _catalog_keys_and_eval_indices(
+        rows: list[Any], *, scalar_only: bool
+    ) -> tuple[set[str], set[int]]:
+        names: set[str] = set()
+        eval_indices: set[int] = set()
+        for index, row in enumerate(rows):
+            payload = orjson.loads(row["metrics"])
+            has_eval = False
+            for key, value in payload.items():
+                if key in {"timestamp", "step"}:
+                    continue
+                if SQLiteStorage._is_eval_metric_key(key):
+                    has_eval = True
+                if scalar_only and not SQLiteStorage._is_scalar_metric_value(value):
+                    continue
+                names.add(key)
+            if has_eval:
+                eval_indices.add(index)
+        return names, eval_indices
+
+    @staticmethod
+    def _subsample_metric_rows(
+        rows: list[Any],
+        max_points: int | None,
+        keep_indices: set[int] | None = None,
+    ) -> list[Any]:
         if max_points is None or max_points < 1:
             return rows
         if len(rows) <= max_points:
             return rows
-        step = len(rows) / max_points
-        indices = {int(i * step) for i in range(max_points)}
-        indices.add(len(rows) - 1)
+        keep = keep_indices or set()
+        other_indices = [i for i in range(len(rows)) if i not in keep]
+        if len(other_indices) <= max_points:
+            return rows
+        step = len(other_indices) / max_points
+        indices = {other_indices[int(i * step)] for i in range(max_points)}
+        indices.add(other_indices[-1])
+        indices.update(keep)
         return [rows[i] for i in sorted(indices)]
 
     @staticmethod
@@ -1055,7 +1093,7 @@ class SQLiteStorage:
         max_points: int | None,
         *,
         scalar_only: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         cursor.execute(
             f"""
             SELECT timestamp, step, metrics
@@ -1066,8 +1104,14 @@ class SQLiteStorage:
             (run_identity[1],),
         )
         rows = cursor.fetchall()
-        rows = SQLiteStorage._subsample_metric_rows(rows, max_points)
-        return SQLiteStorage._metric_rows_to_log_dicts(rows, scalar_only=scalar_only)
+        metric_names, eval_indices = SQLiteStorage._catalog_keys_and_eval_indices(
+            rows, scalar_only=scalar_only
+        )
+        rows = SQLiteStorage._subsample_metric_rows(
+            rows, max_points, keep_indices=eval_indices
+        )
+        logs = SQLiteStorage._metric_rows_to_log_dicts(rows, scalar_only=scalar_only)
+        return logs, sorted(metric_names)
 
     @staticmethod
     def get_logs(
@@ -1090,9 +1134,10 @@ class SQLiteStorage:
                 )
                 if run_identity is None:
                     return []
-                return SQLiteStorage._fetch_metric_logs_with_cursor(
+                logs, _metric_names = SQLiteStorage._fetch_metric_logs_with_cursor(
                     cursor, run_identity, max_points, scalar_only=scalar_only
                 )
+                return logs
         except sqlite3.OperationalError as e:
             if "no such table: metrics" in str(e):
                 return []
@@ -1114,6 +1159,7 @@ class SQLiteStorage:
                     "run": r.get("run"),
                     "run_id": r.get("run_id"),
                     "logs": [],
+                    "metrics": [],
                 }
                 for r in runs
             ]
@@ -1129,9 +1175,10 @@ class SQLiteStorage:
                         conn, run_name=run, run_id=run_id
                     )
                     if run_identity is None:
-                        logs = []
+                        logs: list[dict[str, Any]] = []
+                        metric_names: list[str] = []
                     else:
-                        logs = SQLiteStorage._fetch_metric_logs_with_cursor(
+                        logs, metric_names = SQLiteStorage._fetch_metric_logs_with_cursor(
                             cursor, run_identity, max_points, scalar_only=scalar_only
                         )
                     out.append(
@@ -1139,6 +1186,7 @@ class SQLiteStorage:
                             "run": run,
                             "run_id": run_id,
                             "logs": logs,
+                            "metrics": metric_names,
                         }
                     )
         except sqlite3.OperationalError as e:
@@ -1148,6 +1196,7 @@ class SQLiteStorage:
                         "run": r.get("run"),
                         "run_id": r.get("run_id"),
                         "logs": [],
+                        "metrics": [],
                     }
                     for r in runs
                 ]

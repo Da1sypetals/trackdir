@@ -18,6 +18,8 @@
     filterMetricsByRegex,
     computeMetricPlotData,
     logsHaveNewData,
+    mergeMetricCatalogs,
+    metricCatalogChanged,
   } from "../lib/dataProcessing.js";
   import { buildColorMap } from "../lib/stores.js";
 
@@ -28,8 +30,8 @@
     xAxis = "step",
     logScaleX = false,
     logScaleY = false,
-    outlierFilterEnabled = false,
-    outlierFilterHead = 0.1,
+    outlierFilterEnabled = true,
+    outlierFilterHead = 1,
     outlierFilterTail = 0.1,
     metricFilter = "",
     showHeaders = true,
@@ -50,6 +52,7 @@
   let dragState = $state({ group: null, index: -1 });
 
   let rawDataCache = new Map();
+  let metricNamesCache = new Map();
   let refreshTimer = null;
   const MAX_BATCH_RUNS = 64;
 
@@ -131,9 +134,13 @@
     const originals = allRows.filter(
       (r) => r.data_type === "original" || !r.data_type,
     );
-    const allCols = getMetricColumns(originals).filter(
+    const fromLogs = getMetricColumns(originals).filter(
       (c) => c !== "run" && c !== "data_type" && c !== "x_axis",
     );
+    const catalogs = selectedRuns.map((run) =>
+      metricNamesCache.get(run.id ?? run.name),
+    );
+    const allCols = mergeMetricCatalogs(catalogs, fromLogs);
     const cols = allCols.filter((c) => c !== xColumn);
     metrics = cols;
     metricColumns = allCols;
@@ -189,6 +196,9 @@
         for (const entry of batch) {
           const runKey = entry.run_id ?? entry.run;
           rawDataCache.set(runKey, entry.logs);
+          if (Array.isArray(entry.metrics)) {
+            metricNamesCache.set(runKey, entry.metrics);
+          }
           fetched = true;
         }
       } catch (e) {
@@ -218,6 +228,13 @@
         if (!prev || logsHaveNewData(prev, logs)) {
           rawDataCache.set(runKey, logs);
           changed = true;
+        }
+        if (Array.isArray(entry.metrics)) {
+          const prevNames = metricNamesCache.get(runKey);
+          if (metricCatalogChanged(prevNames, entry.metrics)) {
+            metricNamesCache.set(runKey, entry.metrics);
+            changed = true;
+          }
         }
       }
       if (changed) {
@@ -315,39 +332,38 @@
               {@const yExtent = plotResult.yExtent}
               {@const useBar = singlePointMetrics.has(metric)}
               {@const directTitle = showHeaders ? metric.split("/").slice(1).join("/") || metric : metric}
-              {#if plotData.length > 0}
-                {#if useBar}
-                  <BarPlot
-                    data={plotData}
-                    y={metric}
-                    title={directTitle}
-                    colorField="series_key"
-                    colorDisplayField="run"
-                    {colorMap}
-                    draggable={true}
-                    ondragstart={(e) => handleDragStart(directKey, i, e)}
-                    ondragover={(e) => handleDragOver(directKey, i, e)}
-                    ondrop={(e) => handleDrop(directKey, i, orderedDirect, e)}
-                  />
-                {:else}
-                  <LinePlot
-                    data={plotData}
-                    x={xColumn}
-                    y={metric}
-                    title={directTitle}
-                    colorField="series_key"
-                    colorDisplayField="run"
-                    {colorMap}
-                    {xLim}
-                    {yExtent}
-                    onSelect={handlePlotSelect}
-                    onResetZoom={handleResetZoom}
-                    draggable={true}
-                    ondragstart={(e) => handleDragStart(directKey, i, e)}
-                    ondragover={(e) => handleDragOver(directKey, i, e)}
-                    ondrop={(e) => handleDrop(directKey, i, orderedDirect, e)}
-                  />
-                {/if}
+              {#if useBar}
+                <BarPlot
+                  data={plotData}
+                  y={metric}
+                  title={directTitle}
+                  colorField="series_key"
+                  colorDisplayField="run"
+                  {colorMap}
+                  draggable={true}
+                  ondragstart={(e) => handleDragStart(directKey, i, e)}
+                  ondragover={(e) => handleDragOver(directKey, i, e)}
+                  ondrop={(e) => handleDrop(directKey, i, orderedDirect, e)}
+                />
+              {:else}
+                <LinePlot
+                  data={plotData}
+                  x={xColumn}
+                  y={metric}
+                  title={directTitle}
+                  colorField="series_key"
+                  colorDisplayField="run"
+                  {colorMap}
+                  {xLim}
+                  {yExtent}
+                  pinLatestX={true}
+                  onSelect={handlePlotSelect}
+                  onResetZoom={handleResetZoom}
+                  draggable={true}
+                  ondragstart={(e) => handleDragStart(directKey, i, e)}
+                  ondragover={(e) => handleDragOver(directKey, i, e)}
+                  ondrop={(e) => handleDrop(directKey, i, orderedDirect, e)}
+                />
               {/if}
             {/each}
           </div>
@@ -369,39 +385,38 @@
                   {@const yExtent = plotResult.yExtent}
                   {@const useBar = singlePointMetrics.has(metric)}
                   {@const subTitle = showHeaders ? metric.split("/").slice(2).join("/") || metric : metric}
-                  {#if plotData.length > 0}
-                    {#if useBar}
-                      <BarPlot
-                        data={plotData}
-                        y={metric}
-                        title={subTitle}
-                        colorField="series_key"
-                        colorDisplayField="run"
-                        {colorMap}
-                        draggable={true}
-                        ondragstart={(e) => handleDragStart(subKey, i, e)}
-                        ondragover={(e) => handleDragOver(subKey, i, e)}
-                        ondrop={(e) => handleDrop(subKey, i, orderedSub, e)}
-                      />
-                    {:else}
-                      <LinePlot
-                        data={plotData}
-                        x={xColumn}
-                        y={metric}
-                        title={subTitle}
-                        colorField="series_key"
-                        colorDisplayField="run"
-                        {colorMap}
-                        {xLim}
-                        {yExtent}
-                        onSelect={handlePlotSelect}
-                        onResetZoom={handleResetZoom}
-                        draggable={true}
-                        ondragstart={(e) => handleDragStart(subKey, i, e)}
-                        ondragover={(e) => handleDragOver(subKey, i, e)}
-                        ondrop={(e) => handleDrop(subKey, i, orderedSub, e)}
-                      />
-                    {/if}
+                  {#if useBar}
+                    <BarPlot
+                      data={plotData}
+                      y={metric}
+                      title={subTitle}
+                      colorField="series_key"
+                      colorDisplayField="run"
+                      {colorMap}
+                      draggable={true}
+                      ondragstart={(e) => handleDragStart(subKey, i, e)}
+                      ondragover={(e) => handleDragOver(subKey, i, e)}
+                      ondrop={(e) => handleDrop(subKey, i, orderedSub, e)}
+                    />
+                  {:else}
+                    <LinePlot
+                      data={plotData}
+                      x={xColumn}
+                      y={metric}
+                      title={subTitle}
+                      colorField="series_key"
+                      colorDisplayField="run"
+                      {colorMap}
+                      {xLim}
+                      {yExtent}
+                      pinLatestX={true}
+                      onSelect={handlePlotSelect}
+                      onResetZoom={handleResetZoom}
+                      draggable={true}
+                      ondragstart={(e) => handleDragStart(subKey, i, e)}
+                      ondragover={(e) => handleDragOver(subKey, i, e)}
+                      ondrop={(e) => handleDrop(subKey, i, orderedSub, e)}
+                    />
                   {/if}
                 {/each}
               </div>

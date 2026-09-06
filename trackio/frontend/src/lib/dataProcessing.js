@@ -454,6 +454,139 @@ export function logsHaveNewData(prev, next) {
   return a.step !== b.step || a.ts !== b.ts;
 }
 
+const EXCLUDED_METRIC_COLUMNS = new Set(["run", "data_type", "x_axis"]);
+
+export function mergeMetricCatalogs(catalogs, fallbackColumns = []) {
+  const names = new Set();
+  let hasCatalog = false;
+  for (const catalog of catalogs) {
+    if (!Array.isArray(catalog)) continue;
+    hasCatalog = true;
+    for (const name of catalog) {
+      if (typeof name === "string" && name && !EXCLUDED_METRIC_COLUMNS.has(name)) {
+        names.add(name);
+      }
+    }
+  }
+  if (hasCatalog) return [...names];
+  return fallbackColumns.filter(
+    (column) => typeof column === "string" && !EXCLUDED_METRIC_COLUMNS.has(column),
+  );
+}
+
+export function metricCatalogChanged(prev, next) {
+  if (prev === next) return false;
+  if (!prev || !next) return Boolean(next) !== Boolean(prev);
+  if (prev.length !== next.length) return true;
+  const left = [...prev].sort();
+  const right = [...next].sort();
+  return left.some((name, index) => name !== right[index]);
+}
+
+function ticksAlmostEqual(a, b) {
+  const scale = Math.max(1, Math.abs(a), Math.abs(b));
+  return Math.abs(a - b) <= scale * 1e-9;
+}
+
+function roundTickValue(value, step) {
+  const decimals = Math.max(0, Math.min(12, -Math.floor(Math.log10(step) + 1e-12) + 2));
+  const factor = 10 ** decimals;
+  const rounded = Math.round(value * factor) / factor;
+  return rounded === 0 ? 0 : rounded;
+}
+
+function evenTickStep(range, count) {
+  const raw = range / Math.max(count, 1);
+  const exponent = Math.floor(Math.log10(raw));
+  const base = 10 ** exponent;
+  const error = raw / base;
+  let nice = 10;
+  for (const candidate of [1, 2, 2.5, 5, 10]) {
+    if (error <= candidate) {
+      nice = candidate;
+      break;
+    }
+  }
+  return nice * base;
+}
+
+function generateEvenTicks(min, max, count) {
+  const range = max - min;
+  if (!(range > 0) || !Number.isFinite(range)) return [min];
+  const step = evenTickStep(range, count);
+  if (!(step > 0) || !Number.isFinite(step)) return [min, max];
+  const start = Math.ceil((min - step * 1e-12) / step) * step;
+  const ticks = [];
+  const limit = max + step * 1e-9;
+  for (let raw = start; raw <= limit; raw += step) {
+    const value = roundTickValue(raw, step);
+    if (value + step * 1e-9 >= min && value - step * 1e-9 <= max) {
+      if (ticks.length === 0 || !ticksAlmostEqual(ticks[ticks.length - 1], value)) {
+        ticks.push(value);
+      }
+    }
+    if (ticks.length > 40) break;
+  }
+  return ticks;
+}
+
+function axisLabelText(value) {
+  if (Number.isFinite(value) && ticksAlmostEqual(value, Math.round(value))) {
+    return String(Math.round(value));
+  }
+  return String(value);
+}
+
+function axisLabelWidth(value, fontSize) {
+  return axisLabelText(value).length * fontSize * 0.62;
+}
+
+function latestTickCollides(previous, latest, min, max, plotWidth, fontSize, gap) {
+  const span = max - min;
+  if (!(span > 0) || !(plotWidth > 0)) return false;
+  const pixels = ((latest - previous) / span) * plotWidth;
+  const needed =
+    axisLabelWidth(previous, fontSize) / 2 +
+    axisLabelWidth(latest, fontSize) / 2 +
+    gap;
+  return pixels < needed;
+}
+
+export function pinLatestAxisTicks(min, max, plotWidth, options = {}) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return undefined;
+  if (min > max) {
+    const swap = min;
+    min = max;
+    max = swap;
+  }
+  if (ticksAlmostEqual(min, max)) return [max];
+
+  const tickCount = options.tickCount ?? 5;
+  const fontSize = options.fontSize ?? 10;
+  const gap = options.gap ?? 6;
+  const even = generateEvenTicks(min, max, tickCount);
+  const ticks = even.filter((value) => value < max && !ticksAlmostEqual(value, max));
+  if (ticks.length === 0 || !ticksAlmostEqual(ticks[0], min)) {
+    ticks.unshift(min === 0 ? 0 : min);
+  }
+  ticks.push(max);
+  if (
+    ticks.length >= 3 &&
+    latestTickCollides(
+      ticks[ticks.length - 2],
+      max,
+      min,
+      max,
+      plotWidth,
+      fontSize,
+      gap,
+    )
+  ) {
+    ticks.splice(ticks.length - 2, 1);
+  }
+  return ticks;
+}
+
 export function filterMetricsByRegex(metrics, pattern) {
   if (!pattern || !pattern.trim()) return metrics;
   try {

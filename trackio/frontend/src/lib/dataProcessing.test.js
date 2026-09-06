@@ -2,6 +2,9 @@ import { describe, expect, test } from "vitest";
 import {
   computeMetricPlotData,
   filterOutlierExtent,
+  mergeMetricCatalogs,
+  metricCatalogChanged,
+  pinLatestAxisTicks,
   processRunData,
 } from "./dataProcessing.js";
 
@@ -126,5 +129,56 @@ describe("filterOutlierExtent", () => {
     expect(filtered.yExtent).toEqual([0, 98]);
     // data points themselves are kept (only the axis range changes)
     expect(filtered.data.length).toBe(unfiltered.data.length);
+  });
+});
+
+describe("mergeMetricCatalogs", () => {
+  test("uses the database catalog even when subsampled logs omit a key", () => {
+    expect(
+      mergeMetricCatalogs(
+        [["train/loss", "eval/recon_loss", "eval/disc_accuracy"]],
+        ["train/loss"],
+      ),
+    ).toEqual(["train/loss", "eval/recon_loss", "eval/disc_accuracy"]);
+  });
+
+  test("falls back to log columns when no catalog is present", () => {
+    expect(mergeMetricCatalogs([undefined], ["train/loss", "run"])).toEqual([
+      "train/loss",
+    ]);
+  });
+});
+
+describe("metricCatalogChanged", () => {
+  test("detects newly appeared metric names", () => {
+    expect(metricCatalogChanged(["train/loss"], ["train/loss", "eval/recon_loss"])).toBe(
+      true,
+    );
+    expect(metricCatalogChanged(["train/loss"], ["train/loss"])).toBe(false);
+  });
+});
+
+describe("pinLatestAxisTicks", () => {
+  test("always includes the latest value", () => {
+    const ticks = pinLatestAxisTicks(0, 38421, 400);
+    expect(ticks[ticks.length - 1]).toBe(38421);
+    expect(ticks[0]).toBe(0);
+    expect(ticks).toContain(30000);
+  });
+
+  test("drops the last even tick when it collides with the latest label", () => {
+    const ticks = pinLatestAxisTicks(0, 31000, 400);
+    expect(ticks[ticks.length - 1]).toBe(31000);
+    expect(ticks).not.toContain(30000);
+  });
+
+  test("keeps a single tick when min equals max", () => {
+    expect(pinLatestAxisTicks(12, 12, 400)).toEqual([12]);
+  });
+
+  test("does not duplicate the latest value when it already sits on an even tick", () => {
+    const ticks = pinLatestAxisTicks(0, 10000, 400);
+    expect(ticks.filter((value) => value === 10000)).toHaveLength(1);
+    expect(ticks[ticks.length - 1]).toBe(10000);
   });
 });

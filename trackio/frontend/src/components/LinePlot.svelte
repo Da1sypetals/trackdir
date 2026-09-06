@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import embed from "vega-embed";
   import * as vega from "vega";
-  import { buildColorSpecKey } from "../lib/dataProcessing.js";
+  import { buildColorSpecKey, pinLatestAxisTicks } from "../lib/dataProcessing.js";
   import { visibleLegendEntries } from "../lib/legend.js";
 
   let {
@@ -25,6 +25,7 @@
     ondragstart = null,
     ondragover = null,
     ondrop = null,
+    pinLatestX = false,
   } = $props();
 
   let container = $state(null);
@@ -33,6 +34,7 @@
   let view = $state(null);
   let fullscreen = $state(false);
   let yZeroBaseline = $state(false);
+  let plotWidth = $state(0);
 
   let effectiveYExtent = $derived.by(() => {
     if (!yZeroBaseline) return yExtent;
@@ -163,11 +165,33 @@
     const { originalData, smoothedData, hasSmoothed } = splitData();
     lastHasSmoothed = hasSmoothed;
     const xDomain = computeXDomain(originalData);
+    const tickValues =
+      pinLatestX && xDomain
+        ? pinLatestAxisTicks(xDomain[0], xDomain[1], plotWidth || 280)
+        : undefined;
+    const xAxis =
+      tickValues && tickValues.length > 0
+        ? {
+            values: tickValues,
+            labelOverlap: false,
+            labelFlush: true,
+            ...(tickValues.every(
+              (value) => Number.isFinite(value) && Math.abs(value - Math.round(value)) < 1e-6,
+            )
+              ? { format: "d" }
+              : {}),
+          }
+        : undefined;
 
     const xEnc = {
       field: x,
       type: "quantitative",
-      scale: { zero: false, ...(xDomain ? { domain: xDomain } : {}) },
+      scale: {
+        zero: false,
+        ...(pinLatestX ? { nice: false } : {}),
+        ...(xDomain ? { domain: xDomain } : {}),
+      },
+      ...(xAxis ? { axis: xAxis } : {}),
     };
     const yEnc = {
       field: y,
@@ -326,7 +350,8 @@
     const yKey = effectiveYExtent
       ? `${effectiveYExtent[0]},${effectiveYExtent[1]}`
       : "auto";
-    return `${y}\0${x}\0${colorSpecKey}\0${dashSpecKey}\0${title}\0${fullscreen}\0${!!onSelect}\0${xKey}\0${yKey}\0${yZeroBaseline}`;
+    const tickKey = pinLatestX ? `\0${plotWidth}` : "";
+    return `${y}\0${x}\0${colorSpecKey}\0${dashSpecKey}\0${title}\0${fullscreen}\0${!!onSelect}\0${xKey}\0${yKey}\0${yZeroBaseline}${tickKey}`;
   }
 
   function replaceDataset(v, name, newData) {
@@ -548,6 +573,8 @@
     title;
     fullscreen;
     container;
+    pinLatestX;
+    plotWidth;
     render();
   });
 
@@ -555,6 +582,8 @@
     if (!container) return;
     const ro = new ResizeObserver(() => {
       queueMicrotask(() => {
+        const width = container.clientWidth || 0;
+        if (width !== plotWidth) plotWidth = width;
         view?.resize();
       });
     });

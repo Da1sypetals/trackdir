@@ -64,8 +64,8 @@
   let xAxis = $state("step");
   let logScaleX = $state(false);
   let logScaleY = $state(false);
-  let outlierFilterEnabled = $state(false);
-  let outlierFilterHead = $state(0.1);
+  let outlierFilterEnabled = $state(true);
+  let outlierFilterHead = $state(1);
   let outlierFilterTail = $state(0.1);
   let metricFilter = $state("");
   let realtimeEnabled = $state(true);
