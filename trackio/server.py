@@ -18,7 +18,7 @@ from trackio import utils
 from trackio.asgi_app import create_trackio_starlette_app
 from trackio.sqlite_storage import SQLiteStorage
 
-MAX_SERIES_LOGS = 3000
+MAX_SERIES_LOGS = 4096
 
 _ALLOWED_TRACE_SORTS = {
     "request_time_desc",

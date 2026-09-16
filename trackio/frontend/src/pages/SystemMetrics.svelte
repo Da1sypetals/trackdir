@@ -12,7 +12,6 @@
   import {
     groupMetricsByPrefix,
     computeMetricPlotData,
-    downsample,
     logsHaveNewData,
   } from "../lib/dataProcessing.js";
   import { buildColorMap } from "../lib/stores.js";
@@ -468,14 +467,7 @@
     }
 
     return {
-      data: downsample(
-        relevant,
-        xColumn,
-        "value",
-        "seriesKey",
-        xLim,
-        ["seriesKey", "run", "series_key", "device"],
-      ).data,
+      data: relevant,
       yExtent,
     };
   }

@@ -165,7 +165,7 @@ export function computeMetricPlotData(
   if (xLim) {
     const groups = new Map();
     for (const r of relevant) {
-        const key = `${r.series_key || r.run || ""}\0${r.data_type || "original"}`;
+      const key = `${r.series_key || r.run || ""}\0${r.data_type || "original"}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(r);
     }
@@ -195,15 +195,35 @@ export function computeMetricPlotData(
     yExtent = filterOutlierExtent(values, outlierFilter ?? {});
   }
   return {
-    data: downsample(relevant, xColumn, metric, "series_key", xLim, [
-      "run",
-      "series_key",
-    ]).data,
+    data: relevant,
     yExtent,
   };
 }
 
-function downsampleImpl(data, x, y, colorField, xLim, extraFields = []) {
+const REFERENCE_PLOT_WIDTH = 400;
+const REFERENCE_MAX_POINTS_PER_CURVE = 256;
+const MIN_MAX_POINTS_PER_CURVE = 64;
+const DEFAULT_MAX_POINTS_PER_CURVE = REFERENCE_MAX_POINTS_PER_CURVE;
+
+export function maxPointsForPlotWidth(plotWidth) {
+  if (!(plotWidth > 0)) return DEFAULT_MAX_POINTS_PER_CURVE;
+  return Math.max(
+    MIN_MAX_POINTS_PER_CURVE,
+    Math.round(
+      (plotWidth * REFERENCE_MAX_POINTS_PER_CURVE) / REFERENCE_PLOT_WIDTH,
+    ),
+  );
+}
+
+function downsampleImpl(
+  data,
+  x,
+  y,
+  colorField,
+  xLim,
+  extraFields = [],
+  maxPoints = DEFAULT_MAX_POINTS_PER_CURVE,
+) {
   const columns = [x, y];
   if (colorField && Object.hasOwn(data[0], colorField)) {
     columns.push(colorField);
@@ -239,12 +259,12 @@ function downsampleImpl(data, x, y, colorField, xLim, extraFields = []) {
   }
 
   const result = [];
-  const nBins = 100;
+  const nBins = Math.max(1, Math.ceil(maxPoints / 2));
 
   Object.values(groups).forEach((groupData) => {
     groupData.sort((a, b) => (a[x] || 0) - (b[x] || 0));
 
-    if (groupData.length < 500) {
+    if (groupData.length <= maxPoints) {
       result.push(...groupData);
       return;
     }
@@ -288,7 +308,15 @@ function downsampleImpl(data, x, y, colorField, xLim, extraFields = []) {
   return { data: result, xLim: updatedXLim };
 }
 
-export function downsample(data, x, y, colorField, xLim, extraFields = []) {
+export function downsample(
+  data,
+  x,
+  y,
+  colorField,
+  xLim,
+  extraFields = [],
+  maxPoints = DEFAULT_MAX_POINTS_PER_CURVE,
+) {
   if (!data || data.length === 0) return { data, xLim };
 
   const splitByDataType =
@@ -307,7 +335,15 @@ export function downsample(data, x, y, colorField, xLim, extraFields = []) {
     const merged = [];
     let mergedXLim = xLim;
     for (const chunk of chunks.values()) {
-      const out = downsampleImpl(chunk, x, y, colorField, xLim, extraFields);
+      const out = downsampleImpl(
+        chunk,
+        x,
+        y,
+        colorField,
+        xLim,
+        extraFields,
+        maxPoints,
+      );
       merged.push(...out.data);
       mergedXLim = out.xLim;
     }
@@ -315,7 +351,7 @@ export function downsample(data, x, y, colorField, xLim, extraFields = []) {
     return { data: merged, xLim: mergedXLim };
   }
 
-  return downsampleImpl(data, x, y, colorField, xLim, extraFields);
+  return downsampleImpl(data, x, y, colorField, xLim, extraFields, maxPoints);
 }
 
 export function groupMetricsByPrefix(metrics, plotOrder = []) {
@@ -440,7 +476,7 @@ function logMarker(log) {
 
 // Returns true when the freshly fetched `next` log array carries data the
 // cached `prev` array doesn't. We can't use `next.length !== prev.length`
-// because the backend caps each response at ~1500 points — once a run
+// because the backend caps each response at a fixed point count — once a run
 // crosses that threshold, length stops changing and realtime charts freeze.
 // Instead compare the last (step, timestamp) pair, which advances with every
 // new log even when the returned slice is truncated.

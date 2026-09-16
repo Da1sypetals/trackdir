@@ -596,6 +596,7 @@ def downsample(
     y: str,
     color: str | None,
     x_lim: tuple[float | None, float | None] | None = None,
+    max_points: int = 256,
 ) -> tuple[Any, tuple[float, float] | None]:
     """
     Downsample the dataframe to reduce the number of points plotted.
@@ -607,6 +608,9 @@ def downsample(
         y: The column name to use for the y-axis.
         color: The column name to use for the color.
         x_lim: The x-axis limits to use.
+        max_points: The maximum number of points to keep per curve. Each x-axis
+            bin contributes at most two points (the min and max y values), so the
+            number of bins is ``ceil(max_points / 2)``.
 
     Returns:
         A tuple containing the downsampled dataframe and the updated x-axis limits.
@@ -639,7 +643,7 @@ def downsample(
     else:
         updated_x_lim = None
 
-    n_bins = 100
+    n_bins = max(1, math.ceil(max_points / 2))
 
     groups: dict[Any, list[tuple[int, dict[str, Any]]]] = {}
     if color is not None and color in columns_to_keep:
@@ -683,7 +687,7 @@ def downsample(
                 downsampled_indices.append(min_y_idx)
             continue
 
-        if len(group_rows) < 500:
+        if len(group_rows) <= max_points:
             downsampled_indices.extend(idx for idx, _ in group_rows)
             continue
 

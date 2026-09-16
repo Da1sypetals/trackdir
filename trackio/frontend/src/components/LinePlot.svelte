@@ -2,7 +2,12 @@
   import { onMount, tick } from "svelte";
   import embed from "vega-embed";
   import * as vega from "vega";
-  import { buildColorSpecKey, pinLatestAxisTicks } from "../lib/dataProcessing.js";
+  import {
+    buildColorSpecKey,
+    downsample,
+    maxPointsForPlotWidth,
+    pinLatestAxisTicks,
+  } from "../lib/dataProcessing.js";
   import { visibleLegendEntries } from "../lib/legend.js";
 
   let {
@@ -35,6 +40,28 @@
   let fullscreen = $state(false);
   let yZeroBaseline = $state(false);
   let plotWidth = $state(0);
+  let sampledMaxPoints = $state(maxPointsForPlotWidth(0));
+
+  let sampledData = $derived.by(() => {
+    if (!data || data.length === 0) return [];
+    const curveField = "__curve_key";
+    const keyed = data.map((d) => ({
+      ...d,
+      [curveField]: dashField
+        ? `${d[colorField] ?? ""}${d[dashField] ?? ""}`
+        : d[colorField],
+    }));
+    const extraFields = [
+      colorField,
+      colorDisplayField,
+      dashField,
+      "run",
+      "series_key",
+      "device",
+    ].filter((f) => f && f !== curveField);
+    return downsample(keyed, x, y, curveField, xLim, extraFields, sampledMaxPoints)
+      .data;
+  });
 
   let effectiveYExtent = $derived.by(() => {
     if (!yZeroBaseline) return yExtent;
@@ -58,10 +85,10 @@
   let resolvedYLabel = $derived(yLabel || (y.includes("/") ? y.split("/").pop() : y));
 
   let legendEntries = $derived.by(() => {
-    if (!colorField || !data || data.length === 0) return [];
+    if (!colorField || !sampledData || sampledData.length === 0) return [];
     const seen = new Set();
     const entries = [];
-    for (const d of data) {
+    for (const d of sampledData) {
       const key = d[colorField];
       if (key && !seen.has(key)) {
         seen.add(key);
@@ -75,7 +102,9 @@
     return entries;
   });
 
-  let colorSpecKey = $derived(buildColorSpecKey(data, colorField, colorMap));
+  let colorSpecKey = $derived(
+    buildColorSpecKey(sampledData, colorField, colorMap),
+  );
 
   const LEGEND_COLLAPSED_COUNT = 6;
   let legendExpanded = $state(false);
@@ -88,7 +117,7 @@
   );
 
   let dashLegendEntries = $derived.by(() => {
-    if (!dashField || !data || data.length === 0) return [];
+    if (!dashField || !sampledData || sampledData.length === 0) return [];
     const seen = new Set();
     const entries = [];
     const patterns = [
@@ -103,7 +132,7 @@
       [4, 2, 1, 2],
       [2, 1],
     ];
-    for (const d of data) {
+    for (const d of sampledData) {
       const name = d[dashField];
       if (name && !seen.has(name)) {
         seen.add(name);
@@ -134,10 +163,10 @@
   }
 
   function splitData() {
-    const originalData = data.filter(
+    const originalData = sampledData.filter(
       (d) => d.data_type === "original" || !d.data_type,
     );
-    const smoothedData = data.filter((d) => d.data_type === "smoothed");
+    const smoothedData = sampledData.filter((d) => d.data_type === "smoothed");
     return { originalData, smoothedData, hasSmoothed: smoothedData.length > 0 };
   }
 
@@ -150,11 +179,15 @@
 
   function buildSpec() {
     const hasColor =
-      colorField && data.length > 0 && Object.hasOwn(data[0], colorField);
+      colorField &&
+      sampledData.length > 0 &&
+      Object.hasOwn(sampledData[0], colorField);
     const hasDash =
-      dashField && data.length > 0 && Object.hasOwn(data[0], dashField);
+      dashField &&
+      sampledData.length > 0 &&
+      Object.hasOwn(sampledData[0], dashField);
     const allRuns = hasColor
-      ? [...new Set(data.map((d) => d[colorField]))]
+      ? [...new Set(sampledData.map((d) => d[colorField]))]
       : [];
     const uniqueRuns = [...new Set(allRuns)];
     const colorDomain = uniqueRuns;
@@ -292,13 +325,13 @@
       );
     } else {
       layers.push({
-        data: { name: "data_plot", values: data },
+        data: { name: "data_plot", values: sampledData },
         mark: lineMark(),
         encoding: { x: xEnc, y: yEnc, ...colorEnc, ...dashEnc },
         name: "plot",
       });
       layers.push(
-        hoverPointLayer({ data: { name: "data_plot", values: data } }, "hover_points"),
+        hoverPointLayer({ data: { name: "data_plot", values: sampledData } }, "hover_points"),
       );
     }
 
@@ -371,7 +404,7 @@
         replaceDataset(view, "data_original", originalData);
         replaceDataset(view, "data_smoothed", smoothedData);
       } else {
-        replaceDataset(view, "data_plot", data);
+        replaceDataset(view, "data_plot", sampledData);
       }
 
       view.run();
@@ -435,11 +468,13 @@
   }
 
   function downloadCSV() {
-    if (!data || data.length === 0) return;
-    const originals = data.filter((d) => d.data_type === "original" || !d.data_type);
+    if (!sampledData || sampledData.length === 0) return;
+    const originals = sampledData.filter((d) => d.data_type === "original" || !d.data_type);
     if (originals.length === 0) return;
 
-    const cols = Object.keys(originals[0]).filter((k) => k !== "data_type");
+    const cols = Object.keys(originals[0]).filter(
+      (k) => k !== "data_type" && k !== "__curve_key",
+    );
     const header = cols.map((c) => /[,"]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(",");
     const rows = originals.map((row) =>
       cols.map((c) => {
@@ -563,6 +598,7 @@
 
   $effect(() => {
     data;
+    sampledData;
     y;
     x;
     colorSpecKey;
@@ -584,6 +620,10 @@
       queueMicrotask(() => {
         const width = container.clientWidth || 0;
         if (width !== plotWidth) plotWidth = width;
+        const nextMaxPoints = maxPointsForPlotWidth(width);
+        if (nextMaxPoints !== sampledMaxPoints) {
+          sampledMaxPoints = nextMaxPoints;
+        }
         view?.resize();
       });
     });
