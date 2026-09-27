@@ -44,6 +44,10 @@ export async function getMetricsForRun(run) {
   return await callApi("/get_metrics_for_run", normalizeRun(run));
 }
 
+export async function getMetricDescriptions() {
+  return await callApi("/get_metric_descriptions");
+}
+
 export async function getLogs(run, options = {}) {
   return await callApi("/get_logs", { ...normalizeRun(run), ...options });
 }

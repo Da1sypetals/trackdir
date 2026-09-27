@@ -8,6 +8,10 @@ from starlette.routing import Mount
 _MCP_TOOLS = [
     ("get_runs_for_project", "List runs in this Trackio project."),
     ("get_metrics_for_run", "List metric names recorded for a given Trackio run."),
+    (
+        "get_metric_descriptions",
+        "Return the human-readable description of each metric in this project.",
+    ),
     ("get_project_summary", "Return summary metadata for this Trackio project."),
     ("get_run_summary", "Return summary metadata for a Trackio run."),
     (

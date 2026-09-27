@@ -5,7 +5,7 @@
   import BarPlot from "../components/BarPlot.svelte";
   import Accordion from "../components/Accordion.svelte";
   import LoadingTrackio from "../components/LoadingTrackio.svelte";
-  import { getLogsBatch } from "../lib/api.js";
+  import { getLogsBatch, getMetricDescriptions } from "../lib/api.js";
   import {
     getMetricsPollIntervalMs,
     isRateLimitCooldownActive,
@@ -50,6 +50,7 @@
   let hasLoaded = $state(false);
   let metricOrder = $state({});
   let dragState = $state({ group: null, index: -1 });
+  let metricDescriptions = $state({});
 
   let rawDataCache = new Map();
   let metricNamesCache = new Map();
@@ -163,6 +164,14 @@
     singlePointMetrics = sp;
   }
 
+  async function refreshMetricDescriptions() {
+    try {
+      metricDescriptions = (await getMetricDescriptions()) ?? {};
+    } catch (e) {
+      console.error("Failed to load metric descriptions:", e);
+    }
+  }
+
   async function fetchLogsForRuns(runs) {
     const results = [];
     for (let i = 0; i < runs.length; i += MAX_BATCH_RUNS) {
@@ -209,6 +218,9 @@
     if (fetched || !hasLoaded) {
       processFromCache();
     }
+    if (fetched) {
+      await refreshMetricDescriptions();
+    }
     hasLoaded = true;
   }
 
@@ -239,6 +251,7 @@
       }
       if (changed) {
         processFromCache();
+        await refreshMetricDescriptions();
       }
     } catch (e) {
       console.error("Failed to refresh metric logs:", e);
@@ -337,6 +350,7 @@
                   data={plotData}
                   y={metric}
                   title={directTitle}
+                  description={metricDescriptions[metric] ?? ""}
                   colorField="series_key"
                   colorDisplayField="run"
                   {colorMap}
@@ -351,6 +365,7 @@
                   x={xColumn}
                   y={metric}
                   title={directTitle}
+                  description={metricDescriptions[metric] ?? ""}
                   colorField="series_key"
                   colorDisplayField="run"
                   {colorMap}
@@ -390,6 +405,7 @@
                       data={plotData}
                       y={metric}
                       title={subTitle}
+                      description={metricDescriptions[metric] ?? ""}
                       colorField="series_key"
                       colorDisplayField="run"
                       {colorMap}
@@ -404,6 +420,7 @@
                       x={xColumn}
                       y={metric}
                       title={subTitle}
+                      description={metricDescriptions[metric] ?? ""}
                       colorField="series_key"
                       colorDisplayField="run"
                       {colorMap}

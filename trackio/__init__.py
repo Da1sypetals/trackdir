@@ -51,6 +51,7 @@ class _TupleNoPrint(tuple):
 __all__ = [
     "init",
     "log",
+    "describe_metrics",
     "log_system",
     "log_gpu",
     "log_artifact",
@@ -328,6 +329,22 @@ def log(metrics: dict, step: int | None = None) -> None:
         metrics=metrics,
         step=step,
     )
+
+
+def describe_metrics(descriptions: dict[str, str]) -> None:
+    """
+    Stores human-readable descriptions for metric names in the current project.
+    The dashboard shows each description under the title of the metric's plot.
+    Calling it again merges the new descriptions into the existing ones.
+
+    Args:
+        descriptions (`dict[str, str]`):
+            A mapping from full metric name (e.g. `"train/loss"`) to its description.
+    """
+    project_dir = context_vars.current_project_dir.get()
+    if project_dir is None:
+        raise RuntimeError("Call trackio.init() before trackio.describe_metrics().")
+    SQLiteStorage.set_metric_descriptions(utils.get_db_path(Path(project_dir)), descriptions)
 
 
 def log_system(metrics: dict) -> None:

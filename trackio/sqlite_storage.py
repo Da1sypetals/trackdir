@@ -30,6 +30,8 @@ from trackio.utils import (
     serialize_values,
 )
 
+METRIC_DESCRIPTIONS_KEY = "metric_descriptions"
+
 _READ_ONLY_QUERY_PREFIXES = ("select", "with", "pragma")
 _QUERY_MAX_ROWS = 10_000
 _READ_ONLY_PRAGMAS = frozenset(
@@ -2097,6 +2099,33 @@ class SQLiteStorage:
                     (key, value),
                 )
                 conn.commit()
+
+    @staticmethod
+    def set_metric_descriptions(db_path: Path, descriptions: dict[str, str]) -> None:
+        for name, text in descriptions.items():
+            if not isinstance(name, str) or not isinstance(text, str):
+                raise TypeError(
+                    f"metric descriptions must map str to str, got {name!r}: {text!r}"
+                )
+        db_path = SQLiteStorage.init_db(db_path)
+        with SQLiteStorage._get_process_lock(db_path):
+            with SQLiteStorage._get_connection(db_path) as conn:
+                row = conn.execute(
+                    "SELECT value FROM project_metadata WHERE key = ?",
+                    (METRIC_DESCRIPTIONS_KEY,),
+                ).fetchone()
+                merged = orjson.loads(row[0]) if row else {}
+                merged.update(descriptions)
+                conn.execute(
+                    "INSERT OR REPLACE INTO project_metadata (key, value) VALUES (?, ?)",
+                    (METRIC_DESCRIPTIONS_KEY, orjson.dumps(merged).decode()),
+                )
+                conn.commit()
+
+    @staticmethod
+    def get_metric_descriptions(db_path: Path) -> dict[str, str]:
+        value = SQLiteStorage.get_project_metadata(db_path, METRIC_DESCRIPTIONS_KEY)
+        return orjson.loads(value) if value else {}
 
     @staticmethod
     def get_project_metadata(db_path: Path, key: str) -> str | None:

@@ -82,6 +82,7 @@ class Run:
         self.project_dir = Path(project_dir).expanduser().resolve()
         self.db_path = utils.get_db_path(self.project_dir)
         self._client_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._warning_lock = threading.Lock()
         self._warned_failures: set[str] = set()
         self._local_sender_thread: threading.Thread | None = None
@@ -234,21 +235,26 @@ class Run:
         thread = getattr(self, attr_name, None)
         return isinstance(thread, threading.Thread) and thread.is_alive()
 
+    def _take_queued(self) -> tuple[list, list, list]:
+        logs = self._queued_logs.copy()
+        self._queued_logs.clear()
+        system_logs = self._queued_system_logs.copy()
+        self._queued_system_logs.clear()
+        alerts = self._queued_alerts.copy()
+        self._queued_alerts.clear()
+        return logs, system_logs, alerts
+
+    def _write_taken(self, logs: list, system_logs: list, alerts: list) -> None:
+        with self._write_lock:
+            if logs:
+                self._write_logs_to_sqlite(logs)
+            if system_logs:
+                self._write_system_logs_to_sqlite(system_logs)
+            if alerts:
+                self._write_alerts_to_sqlite(alerts)
+
     def _flush_queues_inline(self) -> None:
-        if self._queued_logs:
-            logs_to_send = self._queued_logs.copy()
-            self._queued_logs.clear()
-            self._write_logs_to_sqlite(logs_to_send)
-
-        if self._queued_system_logs:
-            system_logs_to_send = self._queued_system_logs.copy()
-            self._queued_system_logs.clear()
-            self._write_system_logs_to_sqlite(system_logs_to_send)
-
-        if self._queued_alerts:
-            alerts_to_send = self._queued_alerts.copy()
-            self._queued_alerts.clear()
-            self._write_alerts_to_sqlite(alerts_to_send)
+        self._write_taken(*self._take_queued())
 
     def _local_batch_sender(self):
         while (
@@ -262,20 +268,8 @@ class Run:
 
             try:
                 with self._client_lock:
-                    if self._queued_logs:
-                        logs_to_send = self._queued_logs.copy()
-                        self._queued_logs.clear()
-                        self._write_logs_to_sqlite(logs_to_send)
-
-                    if self._queued_system_logs:
-                        system_logs_to_send = self._queued_system_logs.copy()
-                        self._queued_system_logs.clear()
-                        self._write_system_logs_to_sqlite(system_logs_to_send)
-
-                    if self._queued_alerts:
-                        alerts_to_send = self._queued_alerts.copy()
-                        self._queued_alerts.clear()
-                        self._write_alerts_to_sqlite(alerts_to_send)
+                    taken = self._take_queued()
+                self._write_taken(*taken)
             except Exception as e:
                 self._warn_once(
                     "local-sender-loop",

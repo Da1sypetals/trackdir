@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 import trackio
+from trackio import context_vars
 from trackio.sqlite_storage import SQLiteStorage
 from trackio.utils import get_db_path, media_dir
 
@@ -48,6 +49,53 @@ def test_get_run_configs_returns_config_per_run(temp_dir):
         assert configs[run_b_id]["model"] == "vit"
     finally:
         app.close()
+
+
+def test_metric_descriptions_are_merged_and_served(temp_dir):
+    project_dir = temp_dir / "metric_descriptions"
+
+    trackio.init(dir=project_dir, name="run-a")
+    trackio.describe_metrics({"train/loss": "训练损失", "train/lr": "学习率"})
+    trackio.describe_metrics({"train/loss": "训练总损失", "eval/acc": "验证准确率"})
+    trackio.log(metrics={"train/loss": 0.1, "train/lr": 1e-4})
+    trackio.finish()
+
+    assert SQLiteStorage.get_metric_descriptions(get_db_path(project_dir)) == {
+        "train/loss": "训练总损失",
+        "train/lr": "学习率",
+        "eval/acc": "验证准确率",
+    }
+
+    app, url = trackio.show(dir=project_dir, block_thread=False, open_browser=False)
+    try:
+        response = httpx.post(
+            f"{url.rstrip('/')}/api/get_metric_descriptions", json={}, timeout=5
+        )
+        response.raise_for_status()
+        assert response.json()["data"] == {
+            "train/loss": "训练总损失",
+            "train/lr": "学习率",
+            "eval/acc": "验证准确率",
+        }
+    finally:
+        app.close()
+
+
+def test_metric_descriptions_reject_non_string_values(temp_dir):
+    project_dir = temp_dir / "metric_descriptions_invalid"
+    trackio.init(dir=project_dir, name="run-a")
+    with pytest.raises(TypeError):
+        trackio.describe_metrics({"train/loss": 1.0})
+    trackio.finish()
+
+
+def test_describe_metrics_requires_init():
+    token = context_vars.current_project_dir.set(None)
+    try:
+        with pytest.raises(RuntimeError):
+            trackio.describe_metrics({"train/loss": "训练损失"})
+    finally:
+        context_vars.current_project_dir.reset(token)
 
 
 def test_local_dashboard_runs_api(temp_dir):

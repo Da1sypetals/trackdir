@@ -112,6 +112,9 @@ def build_api_registry(project_dir: str | Path) -> dict[str, Any]:
     ) -> list[str]:
         return SQLiteStorage.get_all_metrics_for_run(db_path, run, run_id=run_id)
 
+    def get_metric_descriptions() -> dict[str, str]:
+        return SQLiteStorage.get_metric_descriptions(db_path)
+
     def get_project_summary() -> dict[str, Any]:
         runs = SQLiteStorage.get_run_records(db_path)
         if not runs:
@@ -411,6 +414,7 @@ def build_api_registry(project_dir: str | Path) -> dict[str, Any]:
         "get_runs_for_project": get_runs_for_project,
         "get_run_configs": get_run_configs,
         "get_metrics_for_run": get_metrics_for_run,
+        "get_metric_descriptions": get_metric_descriptions,
         "get_project_summary": get_project_summary,
         "get_run_summary": get_run_summary,
         "get_system_metrics_for_run": get_system_metrics_for_run,

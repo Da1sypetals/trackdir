@@ -10,6 +10,7 @@
     colorDisplayField = "",
     colorMap = {},
     title = "",
+    description = "",
     draggable = false,
     ondragstart = null,
     ondragover = null,
@@ -403,6 +404,9 @@
     {#if title}
       <div class="plot-title">{title}</div>
     {/if}
+    {#if description}
+      <div class="plot-description">{description}</div>
+    {/if}
     <div class="plot-chart-wrap">
       <div class="plot" bind:this={container}></div>
     </div>
@@ -477,6 +481,9 @@
     </div>
     {#if title}
       <div class="plot-title plot-title--fs">{title}</div>
+    {/if}
+    {#if description}
+      <div class="plot-description plot-title--fs">{description}</div>
     {/if}
     <div class="fullscreen-chart-wrap">
       <div class="plot-chart-wrap plot-chart-wrap--fs">
@@ -596,6 +603,15 @@
   }
   .plot-title--fs {
     flex-shrink: 0;
+  }
+  .plot-description {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--body-text-color-subdued, #6b7280);
+    text-align: center;
+    padding: 0 8px 6px;
+    margin-top: -4px;
+    word-break: break-word;
   }
   .plot {
     width: 100%;
